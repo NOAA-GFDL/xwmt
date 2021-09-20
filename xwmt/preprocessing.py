@@ -95,8 +95,8 @@ def preprocessing(ds, grid, decode_times=True, shift_coords=False, reset_time_ax
     coords = {
         'xh': 'x', 'xt_ocean': 'x', 'X': 'x', 'i': 'x',
         'yh': 'y', 'yt_ocean': 'y', 'Y': 'y', 'j': 'y',
-        'z_i': 'lev_outer', 'Zp1': 'lev_outer', 'Zl': 'lev_upper',
-        'z_l': 'lev', 'Z': 'lev'
+        'z_i': 'lev_outer', 'zi': 'lev_outer', 'Zp1': 'lev_outer', 'Zl': 'lev_upper',
+        'z_l': 'lev', 'zl': 'lev', 'Z': 'lev'
     }
     newdims = {}
     for (key,newkey) in {**dims, **coords}.items():
