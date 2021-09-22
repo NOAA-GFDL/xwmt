@@ -201,11 +201,11 @@ class swmt():
 
         # Calculate pressure (dbar)
         if ('alpha' not in vars(self) or 'beta' not in vars(self) or self.teos10) and 'p' not in vars(self):
-            self.p = xr.apply_ufunc(gsw.p_from_z, -self.ds['lev_outer'], self.ds['y'], 0, 0, dask='parallelized')
+            self.p = xr.apply_ufunc(gsw.p_from_z, -self.ds['lev_outer'], self.ds['lat'], 0, 0, dask='parallelized')
         # Calculate absolute salinity (g/kg)
         if self.teos10 and 'sa' not in vars(self):
             self.sa = xr.apply_ufunc(gsw.SA_from_SP, self.ds[self.tend('salt')].where(self.ds['lev_outer']==0).where(self.ds['wet']==1),
-                            self.p, self.ds['x'], self.ds['y'], dask='parallelized')
+                            self.p, self.ds['lon'], self.ds['lat'], dask='parallelized')
         # Calculate conservative temperature (degC)
         if self.teos10 and 'ct' not in vars(self):
             self.ct = xr.apply_ufunc(gsw.CT_from_t, self.sa, self.ds[self.tend('heat')].where(self.ds['lev_outer']==0).where(self.ds['wet']==1),
