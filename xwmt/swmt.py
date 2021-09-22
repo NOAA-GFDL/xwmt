@@ -57,11 +57,11 @@ class swmt():
 
 
     def fluxes(self, lstr=None):
-        if lstr is 'mass':
+        if lstr=='mass':
             dic = self.flux_mass_dict
-        elif lstr is 'salt':
+        elif lstr=='salt':
             dic = self.flux_salt_dict
-        elif lstr is 'heat':
+        elif lstr=='heat':
             dic = self.flux_heat_dict
         else:
             return
