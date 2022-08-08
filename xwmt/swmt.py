@@ -45,7 +45,7 @@ class swmt():
     lambdas_dict = {
         'heat': ['theta'],
         'salt': ['salt'],
-        'density': ['sigma0','sigma1','sigma2','sigma3','sigma4','gamma_n']
+        'density': ['sigma0','sigma1','sigma2','sigma3','sigma4']
     }
 
 
@@ -216,14 +216,20 @@ class swmt():
 
         # Calculate thermal expansion coefficient alpha (1/K)
         if 'alpha' not in vars(self):
-            self.alpha = xr.apply_ufunc(gsw.alpha, self.sa, self.ct, self.p, dask='parallelized')
+            if 'alpha' in self.ds:
+                self.alpha = self.ds.alpha
+            else:
+                self.alpha = xr.apply_ufunc(gsw.alpha, self.sa, self.ct, self.p, dask='parallelized')
 
         # Calculate the haline contraction coefficient beta (kg/g)
         if 'beta' not in vars(self):
-            self.beta =  xr.apply_ufunc(gsw.beta,  self.sa, self.ct, self.p, dask='parallelized')
+            if 'beta' in self.ds:
+                self.beta = self.ds.beta
+            else:
+                self.beta = xr.apply_ufunc(gsw.beta,  self.sa, self.ct, self.p, dask='parallelized')
 
         # Calculate potential density (kg/m^3)
-        if density_str not in vars(self):
+        if density_str not in self.ds:
             if density_str == 'sigma0':
                 density = xr.apply_ufunc(gsw.sigma0, self.sa, self.ct, dask='parallelized')
             elif density_str == 'sigma1':
@@ -236,6 +242,8 @@ class swmt():
                 density = xr.apply_ufunc(gsw.sigma4, self.sa, self.ct, dask='parallelized')
             else:
                 return self.alpha, self.beta, None
+        else:
+            return self.alpha, self.beta, self.ds[density_str]
 
         return self.alpha, self.beta, density.rename(density_str)
 
