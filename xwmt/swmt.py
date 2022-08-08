@@ -222,22 +222,20 @@ class swmt():
         if 'beta' not in vars(self):
             self.beta =  xr.apply_ufunc(gsw.beta,  self.sa, self.ct, self.p, dask='parallelized')
 
-        # Calculate potentail density (kg/m^3)
-        if density_str == 'sigma0':
-            density = xr.apply_ufunc(gsw.sigma0, self.sa, self.ct, dask='parallelized')
-        elif density_str == 'sigma1':
-            density = xr.apply_ufunc(gsw.sigma1, self.sa, self.ct, dask='parallelized')
-        elif density_str == 'sigma2':
-            density = xr.apply_ufunc(gsw.sigma2, self.sa, self.ct, dask='parallelized')
-        elif density_str == 'sigma3':
-            density = xr.apply_ufunc(gsw.sigma3, self.sa, self.ct, dask='parallelized')
-        elif density_str == 'sigma4':
-            density = xr.apply_ufunc(gsw.sigma4, self.sa, self.ct, dask='parallelized')
-        elif density_str == 'gamma_n':
-            # TODO: Function to calculate neutral density (gamma_n) and other neutral variables (gamma)
-            density = gamma_n
-        else:
-            return self.alpha, self.beta, None
+        # Calculate potential density (kg/m^3)
+        if density_str not in vars(self):
+            if density_str == 'sigma0':
+                density = xr.apply_ufunc(gsw.sigma0, self.sa, self.ct, dask='parallelized')
+            elif density_str == 'sigma1':
+                density = xr.apply_ufunc(gsw.sigma1, self.sa, self.ct, dask='parallelized')
+            elif density_str == 'sigma2':
+                density = xr.apply_ufunc(gsw.sigma2, self.sa, self.ct, dask='parallelized')
+            elif density_str == 'sigma3':
+                density = xr.apply_ufunc(gsw.sigma3, self.sa, self.ct, dask='parallelized')
+            elif density_str == 'sigma4':
+                density = xr.apply_ufunc(gsw.sigma4, self.sa, self.ct, dask='parallelized')
+            else:
+                return self.alpha, self.beta, None
 
         return self.alpha, self.beta, density.rename(density_str)
 
