@@ -102,7 +102,8 @@ class swmt():
 
         # Save all 2d variable names in ds that need to be expanded in the vertical
         self.variables = list(self.terms_dict.values())+list(self.flux_heat_dict.values())\
-            +list(self.flux_salt_dict.values())+list(self.flux_mass_dict.values())
+            +list(self.flux_salt_dict.values())+list(self.flux_mass_dict.values())\
+            +self.lambdas_dict['heat']+self.lambdas_dict['salt']+self.lambdas_dict['density']+['alpha', 'beta']
 
         # Modify ds to use a pseudo vertical grid
         if 'lev_outer' not in self.ds: # TODO: Find a better way to check vertical dimensions using both lev_outer and lev
