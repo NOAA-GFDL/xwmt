@@ -6,6 +6,7 @@ dependencies:
   - black
   - gsw
   - netcdf4
+  - numba
   - numpy
   - pandas
   - pip
