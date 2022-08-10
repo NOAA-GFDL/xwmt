@@ -1,0 +1,12 @@
+ipython
+jupyter
+jupyter-sphinx
+matplotlib
+netcdf4
+gsw
+numpy
+pandas
+sphinx-book-theme
+xarray
+xgcm==0.5.2
+xhistogram==0.3.1
