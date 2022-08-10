@@ -46,6 +46,9 @@ jobs:
         run: |
           conda env list
           conda list
+      - name: Download test data
+        run: |
+          curl -o xwmt_test_data.nc ftp://ftp.gfdl.noaa.gov/perm/John.Krasting/xwmt/xwmt_test_data.20220810.nc
       - name: Test with pytest
         run: |
           pytest
