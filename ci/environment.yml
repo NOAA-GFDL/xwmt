@@ -9,6 +9,7 @@ dependencies:
   - numpy
   - pandas
   - pip
+  - pylint
   - python==3.9
   - pytest
   - xarray
