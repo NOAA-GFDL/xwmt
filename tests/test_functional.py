@@ -40,5 +40,10 @@ def test_functional_salt_default():
 ## Tendencies not grouped
 def test_functional_sigma0_notgrouped():
     total = xwmt.swmt(ds).G("sigma0",group_tend=False)
-    assert (np.allclose(total["heat"].sum(), -2.8727879e09)) & (np.allclose(total["heat"].sum(), 7.47602401e08))
+    assert np.allclose(total["heat"].sum(), -2.8727879e09)
+    assert np.allclose(total["salt"].sum(), 7.47602401e08)
     
+## xgcm
+def test_functional_sigma0_default():
+    total = xwmt.swmt(ds).G("sigma0",method="xgcm")
+    assert np.allclose(total.sum(), -2.1251855e09)
