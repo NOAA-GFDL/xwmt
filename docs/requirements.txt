@@ -5,6 +5,7 @@ matplotlib
 netcdf4
 gsw
 numpy
+numba
 pandas
 sphinx-book-theme
 xarray
