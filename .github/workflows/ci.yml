@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l {0}
+    strategy:
+      fail-fast: false
+      matrix:
+        #python-version: [3.7, 3.8, 3.9]
+        python-version: [3.9]
+
+    steps:
+      - name: Cancel previous runs
+        uses: styfle/cancel-workflow-action@0.7.0
+        with:
+          access_token: ${{ github.token }}
+      - name: Checkout source
+        uses: actions/checkout@v2
+
+      - name: Conda setup
+        uses: conda-incubator/setup-miniconda@v2
+        with:
+          channels: conda-forge
+          mamba-version: '*'
+          python-version: ${{ matrix.python-version }}
+          activate-environment: testing
+          auto-activate-base: false
+
+      - name: Set up conda environment
+        run: |
+          mamba env update -f ci/environment.yml
+          python -m pip install --no-deps -e .
+      - name: Conda list information
+        run: |
+          conda env list
+          conda list
+      - name: Test with pytest
+        run: |
+          pytest
