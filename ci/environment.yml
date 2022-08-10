@@ -1,0 +1,16 @@
+name: testing
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - black
+  - gsw
+  - netcdf4
+  - numpy
+  - pandas
+  - pip
+  - python==3.9
+  - pytest
+  - xarray
+  - xgcm==0.5.2
+  - xhistogram==0.3.1
