@@ -44,6 +44,7 @@ def test_functional_sigma0_notgrouped():
     assert np.allclose(total["salt"].sum(), 7.47602401e08)
     
 ## xgcm
-def test_functional_sigma0_default():
+def test_functional_sigma0_xgcm():
     total = xwmt.swmt(ds).G("sigma0",method="xgcm")
     assert np.allclose(total.sum(), -2.1251855e09)
+
