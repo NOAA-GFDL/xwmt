@@ -127,3 +127,14 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Dask
+dask-worker-space/
+
+# #Pycharm
+.idea
+
+# Sphinx
+docs/source/api/
+docs/source/savefig/
+docs/jupyter_execute
