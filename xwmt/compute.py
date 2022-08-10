@@ -1,9 +1,10 @@
+import warnings
+
+import gsw
 import numpy as np
 import xarray as xr
 import xgcm
 from xhistogram.xarray import histogram
-import gsw
-import warnings
 
 
 def zonal_mean(da, metrics):

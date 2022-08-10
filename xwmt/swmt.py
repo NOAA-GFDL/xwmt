@@ -1,12 +1,13 @@
+import warnings
+
+import gsw
 import numpy as np
 import xarray as xr
 from xhistogram.xarray import histogram
-import gsw
-import warnings
 
-from xwmt.compute import get_xgcm_grid_vertical
-from xwmt.compute import expand_surface_to_3D, lbin_define
-from xwmt.compute import Jlmass_from_Qm_lm_l, hldot_from_Jl, hldot_from_Ldot_hldotmass
+from xwmt.compute import (Jlmass_from_Qm_lm_l, expand_surface_to_3D,
+                          get_xgcm_grid_vertical, hldot_from_Jl,
+                          hldot_from_Ldot_hldotmass, lbin_define)
 
 
 class swmt:
