@@ -5,9 +5,14 @@ import numpy as np
 import xarray as xr
 from xhistogram.xarray import histogram
 
-from xwmt.compute import (Jlmass_from_Qm_lm_l, expand_surface_to_3D,
-                          get_xgcm_grid_vertical, hldot_from_Jl,
-                          hldot_from_Ldot_hldotmass, lbin_define)
+from xwmt.compute import (
+    Jlmass_from_Qm_lm_l,
+    expand_surface_to_3D,
+    get_xgcm_grid_vertical,
+    hldot_from_Jl,
+    hldot_from_Ldot_hldotmass,
+    lbin_define,
+)
 
 
 class swmt:
@@ -77,10 +82,12 @@ class swmt:
             Specify value for the reference seawater density (in kg/m^3). rho=1035.0 by default.
         alpha : float, optional
             Specify value for the thermal expansion coefficient (in 1/K). alpha=None by default.
-            If alpha is not given (i.e., alpha=None), it is derived from salinty and temperature fields using `gsw_alpha`.
+            If alpha is not given (i.e., alpha=None), it is derived from salinty and temperature
+            fields using `gsw_alpha`.
         beta : float, optional
             Specify value for the haline contraction coefficient (in kg/g). beta=None by default.
-            If beta is not given (i.e., beta=None), it is derived from salinty and temperature fields using `gsw_beta`.
+            If beta is not given (i.e., beta=None), it is derived from salinty and temperature
+            fields using `gsw_beta`.
         teos10 : boolean, optional
             Use Thermodynamic Equation Of Seawater - 2010 (TEOS-10). True by default.
         """
@@ -324,10 +331,11 @@ class swmt:
         Parameters
         ----------
         lstr : str
-            Specifies lambda (e.g., 'theta', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
+            Specifies lambda (e.g., 'theta', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of
+            available lambdas.
         mass : str, optional
-            Specifies mass flux term (e.g., 'rain_and_ice', 'evaporation', etc.). 'total' by default.
-            Use `fluxes('mass')` to list all available terms.
+            Specifies mass flux term (e.g., 'rain_and_ice', 'evaporation', etc.). 'total' by
+            default. Use `fluxes('mass')` to list all available terms.
         salt : str, optional
             Specifies salt flux term (e.g., 'basal_salt'). 'total' by default.
             Use `fluxes('salt')` to list all available terms.
@@ -521,19 +529,24 @@ class swmt:
         Parameters
         ----------
         lstr : str
-            Specifies lambda (e.g., 'theta', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
+            Specifies lambda (e.g., 'theta', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of
+            available lambdas.
         term : str, optional
-            Specifies process term (e.g., 'boundary forcing', 'vertical diffusion', etc.). Use `processes()` to list all available terms.
+            Specifies process term (e.g., 'boundary forcing', 'vertical diffusion', etc.).
+            Use `processes()` to list all available terms.
         method : str {'xhistogram' (default), 'xgcm'}
-            The calculation can be either done with xhistogram (default) or the xgcm `transform`. If not specified, default will be used.
+            The calculation can be either done with xhistogram (default) or the xgcm `transform`.
+            If not specified, default will be used.
         bins : array like, optional
-            np.array with lambda values specifying the edges for each bin. If not specidied, array will be automatically derived from
+            np.array with lambda values specifying the edges for each bin. If not specidied, array
+            will be automatically derived from
             the scalar field of lambda (e.g., temperature).
         group_tend : boolean, optional
-            Specify whether heat and salt tendencies are summed together (True) or kept separated (False). True by default.
+            Specify whether heat and salt tendencies are summed together (True) or
+            kept separated (False). True by default.
         mass : str, optional
-            Specifies mass flux term (e.g., 'rain_and_ice', 'evaporation', etc.). 'total' by default.
-            Use `fluxes('mass')` to list all available terms.
+            Specifies mass flux term (e.g., 'rain_and_ice', 'evaporation', etc.).
+            'total' by default. Use `fluxes('mass')` to list all available terms.
         salt : str, optional
             Specifies salt flux term (e.g., 'basal_salt'). 'total' by default.
             Use `fluxes('salt')` to list all available terms.
@@ -541,14 +554,17 @@ class swmt:
             Specifies heat flux term (e.g., 'latent', 'sensible', etc.). 'total' by default.
             Use `fluxes('heat')` to list all available terms.
         decompose : str, optional {'mass','salt','heat'}
-            Decompose watermass transformation for a given set of surface fluxes (mass, salt or heat fluxes). None by default.
+            Decompose watermass transformation for a given set of surface fluxes (mass, salt or
+            heat fluxes). None by default.
             This method will overwrite group_tend, mass, salt and heat arguments.
-            To calculate water mass trasnformation for a specifc flux term use mass, salt or heat argument.
+            To calculate water mass trasnformation for a specifc flux term use mass, salt or
+            heat argument.
 
         Returns
         -------
         G : {xarray.DataArray, xarray.Dataset}
-            The water mass transformation along lambda. G is xarray.DataArray for decompose=None and group_tend=True.
+            The water mass transformation along lambda. G is xarray.DataArray for decompose=None
+            and group_tend=True.
             G is xarray.DataSet for decompose={'mass','salt','heat'} or group_tend=False.
         """
 
@@ -628,7 +644,8 @@ class swmt:
         Parameters
         ----------
         lstr : str
-            Specifies lambda (e.g., 'theta', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
+            Specifies lambda (e.g., 'theta', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of
+            available lambdas.
         val : float or ndarray
             Value(s) of lambda for which isosurface(s) is/are defined
         ti : str
@@ -638,9 +655,11 @@ class swmt:
         dl : float
             Width of lamba bin (delta) for which isosurface(s) is/are defined.
         group_tend : boolean, optional
-            Specify whether heat and salt tendencies are summed together (True) or kept separated (False). True by default.
+            Specify whether heat and salt tendencies are summed together (True) or kept separated
+            (False). True by default.
         mass : str, optional
-            Specifies mass flux term (e.g., 'rain_and_ice', 'evaporation', etc.). 'total' by default.
+            Specifies mass flux term (e.g., 'rain_and_ice', 'evaporation', etc.).
+            'total' by default.
             Use `fluxes('mass')` to list all available terms.
         salt : str, optional
             Specifies salt flux term (e.g., 'basal_salt'). 'total' by default.
@@ -649,9 +668,11 @@ class swmt:
             Specifies heat flux term (e.g., 'latent', 'sensible', etc.). 'total' by default.
             Use `fluxes('heat')` to list all available terms.
         decompose : str, optional {'mass','salt','heat'}
-            Decompose watermass transformation for a given set of surface fluxes (mass, salt or heat fluxes). None by default.
+            Decompose watermass transformation for a given set of surface fluxes (mass, salt or
+            heat fluxes). None by default.
             This method will overwrite group_tend, mass, salt and heat arguments.
-            To calculate water mass trasnformation for a specifc flux term use mass, salt or heat argument.
+            To calculate water mass trasnformation for a specifc flux term use mass, salt or
+            heat argument.
 
         Returns
         -------
