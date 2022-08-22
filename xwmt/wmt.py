@@ -2,12 +2,18 @@ import numpy as np
 import xarray as xr
 from xhistogram.xarray import histogram
 import gsw
-import fastjmd95 as jmd95
 import warnings
 
-from wmt_inert_tracer.compute import get_xgcm_grid_vertical
-from wmt_inert_tracer.compute import expand_surface_to_3D, lbin_define, lbin_percentile
-from wmt_inert_tracer.compute import Jlmass_from_Qm_lm_l, hldot_from_Jl, hldot_from_Ldot_hldotmass, calc_hldot_tendency
+from xwmt.compute import (
+    Jlmass_from_Qm_lm_l,
+    calc_hldot_tendency,
+    expand_surface_to_3D,
+    get_xgcm_grid_vertical,
+    hldot_from_Jl,
+    hldot_from_Ldot_hldotmass,
+    lbin_define,
+    lbin_percentile,
+)
 
 class wmt():
     '''
@@ -72,7 +78,7 @@ class wmt():
     lambdas_dict = {
         'heat': ['theta'],
         'salt': ['salt'],
-        'density': ['sigma0','sigma1','sigma2','sigma3','sigma4','gamma_n']
+        'density': ['sigma0','sigma1','sigma2','sigma3','sigma4']
     }
 
     def lambdas(self, lstr=None):
@@ -157,32 +163,52 @@ class wmt():
             self.sa = self.ds.so
             self.ct = self.ds.thetao
 
-        # Calculate thermal expansion/haline contraction coefficient alpha/beta
-        if 'alpha' not in vars(self):
-            self.alpha = xr.apply_ufunc(gsw.alpha, self.sa, self.ct, self.p, dask='parallelized')
-        if 'beta' not in vars(self):
-            self.beta  = xr.apply_ufunc(gsw.beta, self.sa, self.ct, self.p, dask='parallelized')
+        # Calculate thermal expansion coefficient alpha (1/K)
+        if "alpha" not in vars(self):
+            if "alpha" in self.ds:
+                self.alpha = self.ds.alpha
+            else:
+                self.alpha = xr.apply_ufunc(
+                    gsw.alpha, self.sa, self.ct, self.p, dask="parallelized"
+                )
+
+        # Calculate the haline contraction coefficient beta (kg/g)
+        if "beta" not in vars(self):
+            if "beta" in self.ds:
+                self.beta = self.ds.beta
+            else:
+                self.beta = xr.apply_ufunc(
+                    gsw.beta, self.sa, self.ct, self.p, dask="parallelized"
+                )
 
         # Calculate potential density (kg/m^3)
-        if density_str == 'sigma0':
-            density = xr.apply_ufunc(gsw.sigma0, self.sa, self.ct, dask='parallelized')
-        elif density_str == 'sigma1':
-            density = xr.apply_ufunc(gsw.sigma1, self.sa, self.ct, dask='parallelized')
-        elif density_str == 'sigma2':
-            #density = xr.apply_ufunc(gsw.sigma2, self.sa, self.ct, dask='parallelized')
-            density = jmd95.rho(self.ds.so, self.ds.thetao, 2000) - 1000
-        elif density_str == 'sigma3':
-            density = xr.apply_ufunc(gsw.sigma3, self.sa, self.ct, dask='parallelized')
-        elif density_str == 'sigma4':
-            density = xr.apply_ufunc(gsw.sigma4, self.sa, self.ct, dask='parallelized')
-        elif density_str == 'gamma_n':
-            # TODO: Function to calculate neutral density (gamma_n) and other neutral variables (gamma)
-            density = gamma_n
+        if density_str not in self.ds:
+            if density_str == "sigma0":
+                density = xr.apply_ufunc(
+                    gsw.sigma0, self.sa, self.ct, dask="parallelized"
+                )
+            elif density_str == "sigma1":
+                density = xr.apply_ufunc(
+                    gsw.sigma1, self.sa, self.ct, dask="parallelized"
+                )
+            elif density_str == "sigma2":
+                density = xr.apply_ufunc(
+                    gsw.sigma2, self.sa, self.ct, dask="parallelized"
+                )
+            elif density_str == "sigma3":
+                density = xr.apply_ufunc(
+                    gsw.sigma3, self.sa, self.ct, dask="parallelized"
+                )
+            elif density_str == "sigma4":
+                density = xr.apply_ufunc(
+                    gsw.sigma4, self.sa, self.ct, dask="parallelized"
+                )
+            else:
+                return self.alpha, self.beta, None
         else:
-            return self.alpha, self.beta, None
+            return self.alpha, self.beta, self.ds[density_str]
 
         return self.alpha, self.beta, density.rename(density_str)
-
 
     def rho_tend(self, term):
         '''
