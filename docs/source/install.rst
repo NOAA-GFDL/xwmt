@@ -15,3 +15,4 @@ that are listed below:
 * xgcm
 * xhistogram
 
+**xwmt** was build with `xgcm` version *0.5.2* and `xhistogram` version *0.1.1*. Some calculations may not work when a different version of `xgcm` or `xhistogram` is used.
