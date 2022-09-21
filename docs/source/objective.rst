@@ -30,3 +30,8 @@ The first step is to initialize the class by creating an object. This object inc
   swmt_class = swmt(ds)
 
 The `swmt` class object includes multiple functions to look at the relevant data. The most common function is `.G()` which is the WMT along $\lambda$ (i.e., $G(\lambda)$). Here, we need to define $\lambda$. For example, 'theta' for potential temperature ($\theta$) or 'sigma0' for potential density referenced at 0 dbar ($\sigma_0$). You can use command `.lambdas()` for a list of available $\lambda$'s. Here, we will go with $\sigma_0$. This is all you need, but if you want to define the size of the bins you can do that with the argument `bin`.
+
+Disclaimer
+===========================
+`xwmt` does not employ any checks to ensure conservation of heat and salt. It is the user's responsibility to ensure that budgets for heat and salt are properly closed in the datasets. Improperly conserved fields will yield incorrect results.
+

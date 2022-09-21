@@ -59,7 +59,7 @@ To install from PyPi:
 To install from GitHub:
 
 .. parsed-literal::
-   pip install git+https://github.com/jetesdal/xwmt.git
+   pip install git+https://github.com/NOAA-GFDL/xwmt.git
 
 .. Indices and tables
 .. ==================
