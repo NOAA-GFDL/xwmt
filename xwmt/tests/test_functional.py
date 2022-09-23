@@ -47,4 +47,3 @@ def test_functional_sigma0_notgrouped():
 def test_functional_sigma0_xgcm():
     total = xwmt.swmt(ds).G("sigma0",method="xgcm")
     assert np.allclose(total.sum(), -2.1251855e09)
-
