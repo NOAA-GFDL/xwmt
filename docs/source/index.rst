@@ -1,7 +1,7 @@
-xWMT -- xarray-friendly Watermass Routines
-======================================================
+xWMT: xarray-friendly Water Mass Transformation analysis
+==========================================================
 
-**xwmt** is a package for analyzing watermass transformations from ocean model outputs
+**xwmt** is a Python package for water mass transformation analysis that leverages xarray functionality
 
 .. * :doc:`install`
 .. * :doc:`virtualenv`
@@ -51,15 +51,15 @@ xWMT -- xarray-friendly Watermass Routines
 
 Quick Install
 -------------
-To install from Anaconda:
-
-.. parsed-literal::
-   conda install -c jetesdal xwmt
-
 To install from PyPi:
 
 .. parsed-literal::
    pip install xwmt
+
+To install from GitHub:
+
+.. parsed-literal::
+   pip install git+https://github.com/NOAA-GFDL/xwmt.git
 
 .. Indices and tables
 .. ==================
