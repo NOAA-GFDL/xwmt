@@ -534,8 +534,8 @@ class swmt:
         term : str, optional
             Specifies process term (e.g., 'boundary forcing', 'vertical diffusion', etc.).
             Use `processes()` to list all available terms.
-        method : str {'xhistogram' (default), 'xgcm'}
-            The calculation can be either done with xhistogram (default) or the xgcm `transform`.
+        method : str {'xgcm' (default), 'xhistogram'}
+            The calculation can be either done with the xgcm `transform` method (default) or xhistogram.
             If not specified, default will be used.
         bins : array like, optional
             np.array with lambda values specifying the edges for each bin. If not specidied, array

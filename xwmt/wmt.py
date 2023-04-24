@@ -352,7 +352,7 @@ class wmt:
             ).rename(termcode)
         return F_transformed
 
-    def calc_G(self, lstr, term=None, method="xhistogram", bins=None):
+    def calc_G(self, lstr, term=None, method="xgcm", bins=None):
         """
         Water mass transformation (G)
         """
@@ -533,8 +533,9 @@ class wmt:
             Specifies lambda (e.g., 'theta', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
         term : str, optional
             Specifies process term (e.g., 'boundary forcing', 'vertical diffusion', etc.). Use `processes()` to list all available terms.
-        method : str {'xhistogram' (default), 'xgcm'}
-            The calculation can be either done with xhistogram (default) or the xgcm `transform`. If not specified, default will be used.
+        method : str {'xgcm' (default), 'xhistogram'}
+            The calculation can be either done with the xgcm `transform` method (default) or xhistogram.
+            If not specified, default will be used.
         bins : array like, optional
             np.array with lambda values specifying the edges for each bin. If not specidied, array will be automatically derived from
             the scalar field of lambda (e.g., temperature).
@@ -587,8 +588,9 @@ class wmt:
             End date. tf=None by default.
         dl : float
             Width of lamba bin (delta) for which isosurface(s) is/are defined.
-        method : str {'xhistogram' (default), 'xgcm'}
-            The calculation can be either done with xhistogram (default) or the xgcm `transform`. If not specified, default will be used.
+        method : str {'xgcm' (default), 'xhistogram'}
+            The calculation can be either done with the xgcm `transform` method (default) or xhistogram.
+            If not specified, default will be used.
         group_tend : boolean, optional
             Specify whether heat and salt tendencies are summed together (True) or kept separated (False). True by default.
         group_process : boolean, optional

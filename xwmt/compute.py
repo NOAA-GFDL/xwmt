@@ -235,7 +235,8 @@ def get_density(ds, grid, density_str="sigma0"):
         density = xr.apply_ufunc(gsw.sigma2, sa, ct, dask="parallelized")
     if density_str == "gamma_n":
         # TODO: Function to calculate neutral density (gamma_n) and other neutral variables (gamma)
-        density = gamma_n
+        #density = gamma_n
+        raise NameError("Neutral density (gamma_n) is not yet a supported density variable.")
 
     return alpha, beta, density.rename(density_str)
 
@@ -263,9 +264,7 @@ def calc_F_transformed(F, l, xgrid, bins):
     ) / np.diff(bins)
     return F_transformed
 
-
-def calc_G(F, l, grid, bins, method="xhistogram"):
-
+def calc_G(F, l, grid, bins, method="xgcm"):
     if method == "xhistogram":
 
         G = histogram(
