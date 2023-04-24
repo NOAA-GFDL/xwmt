@@ -169,7 +169,7 @@ def calc_hldotmass(xgrid, dd):
         "mass"
     ]:  # If boundary flux specified as mass rather than tracer flux
         scalar_i = xgrid.interp(
-            dd["scalar"]["array"], "Z", boundary="extrapolate"
+            dd["scalar"]["array"], "Z", boundary="extend"
         ).chunk({"lev_outer": -1})
         Jlmass = Jlmass_from_Qm_lm_l(
             hldotmass, dd["boundary"]["scalar_in_mass"], scalar_i
