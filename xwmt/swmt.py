@@ -541,7 +541,7 @@ class swmt:
             np.array with lambda values specifying the edges for each bin. If not specidied, array
             will be automatically derived from
             the scalar field of lambda (e.g., temperature).
-        group_tend : boolean, optional
+        sum_components : boolean, optional
             Specify whether heat and salt tendencies are summed together (True) or
             kept separated (False). True by default.
         mass : str, optional
@@ -556,7 +556,7 @@ class swmt:
         decompose : str, optional {'mass','salt','heat'}
             Decompose watermass transformation for a given set of surface fluxes (mass, salt or
             heat fluxes). None by default.
-            This method will overwrite group_tend, mass, salt and heat arguments.
+            This method will overwrite sum_components, mass, salt and heat arguments.
             To calculate water mass trasnformation for a specifc flux term use mass, salt or
             heat argument.
 
@@ -564,18 +564,18 @@ class swmt:
         -------
         G : {xarray.DataArray, xarray.Dataset}
             The water mass transformation along lambda. G is xarray.DataArray for decompose=None
-            and group_tend=True.
-            G is xarray.DataSet for decompose={'mass','salt','heat'} or group_tend=False.
+            and sum_components=True.
+            G is xarray.DataSet for decompose={'mass','salt','heat'} or sum_components=False.
         """
 
         # Extract the default function args
         decompose = kwargs.get("decompose", None)
-        group_tend = kwargs.pop("group_tend", True)
+        sum_components = kwargs.pop("sum_components", True)
 
-        if group_tend == True and decompose is None:
+        if sum_components == True and decompose is None:
             G = self.calc_G(lstr, *args, **kwargs)
             self._sum(G, "total", ["heat", "salt"])
-        elif group_tend == False and decompose is None:
+        elif sum_components == False and decompose is None:
             G = self.calc_G(lstr, *args, **kwargs)
         elif lstr == "theta" and decompose == "heat":
             keys = [key for key in self.fluxes("heat")]
@@ -611,7 +611,7 @@ class swmt:
             G = []
             for key in keys:
                 _G = self.calc_G(lstr, mass=key, *args, **kwargs)
-                if group_tend == True:
+                if sum_components == True:
                     self._sum(_G, key, ["heat", "salt"])
                 else:
                     _G = _G.rename({"heat": key + "_heat", "salt": key + "_salt"})
@@ -623,13 +623,13 @@ class swmt:
         else:
             return G
 
-    def F(self, lstr, group_tend=True, **kwargs):
+    def F(self, lstr, sum_components=True, **kwargs):
         """
-        Wrapper function for calc_F_transformed() with additional group_tend argument
+        Wrapper function for calc_F_transformed() with additional sum_components argument
         """
 
         F_transformed = self.calc_F_transformed(lstr, **kwargs)
-        if group_tend:
+        if sum_components:
             self._sum(F_transformed, "total", ["heat", "salt"])
             if len(F_transformed) == 1:
                 return F_transformed[list(F_transformed.data_vars)[0]]
@@ -654,7 +654,7 @@ class swmt:
             End date. tf=None by default.
         dl : float
             Width of lamba bin (delta) for which isosurface(s) is/are defined.
-        group_tend : boolean, optional
+        sum_components : boolean, optional
             Specify whether heat and salt tendencies are summed together (True) or kept separated
             (False). True by default.
         mass : str, optional
@@ -670,7 +670,7 @@ class swmt:
         decompose : str, optional {'mass','salt','heat'}
             Decompose watermass transformation for a given set of surface fluxes (mass, salt or
             heat fluxes). None by default.
-            This method will overwrite group_tend, mass, salt and heat arguments.
+            This method will overwrite sum_components, mass, salt and heat arguments.
             To calculate water mass trasnformation for a specifc flux term use mass, salt or
             heat argument.
 
@@ -678,8 +678,8 @@ class swmt:
         -------
         F_mean : {xarray.DataArray, xarray.Dataset}
             Spatial field of mean transformation at a given (set of) lambda value(s).
-            F_mean is xarray.DataArray for decompose=None and group_tend=True.
-            F_mean is xarray.DataSet for decompose={'mass','salt','heat'} or group_tend=False.
+            F_mean is xarray.DataArray for decompose=None and sum_components=True.
+            F_mean is xarray.DataSet for decompose={'mass','salt','heat'} or sum_components=False.
         """
 
         if lstr not in self.lambdas("density"):

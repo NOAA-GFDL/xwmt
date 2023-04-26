@@ -58,6 +58,9 @@ class wmt:
     terms_dict = {"heat": "thetao", "salt": "so"}
 
     processes_heat_dict = {
+        "Eulerian tendency": "opottemptend",
+        "horizontal advection": "T_advection_xy",
+        "vertical advection": "Th_tendency_vert_remap",
         "boundary forcing": "boundary_forcing_heat_tendency",
         "vertical diffusion": "opottempdiff",
         "neutral diffusion": "opottemppmdiff",
@@ -66,6 +69,9 @@ class wmt:
     }
 
     processes_salt_dict = {
+        "Eulerian tendency": "osalttend",
+        "horizontal advection": "S_advection_xy",
+        "vertical advection": "Sh_tendency_vert_remap",
         "boundary forcing": "boundary_forcing_salt_tendency",
         "vertical diffusion": "osaltdiff",
         "neutral diffusion": "osaltpmdiff",
@@ -136,11 +142,13 @@ class wmt:
                 scalar_in_mass = expand_surface_to_3D(
                     self.ds["tos"], self.ds["lev_outer"]
                 )
-            else:
+            elif termcode == "boundary_forcing_salt_tendency":
                 flux = expand_surface_to_3D(self.ds["wfo"], self.ds["lev_outer"])
                 scalar_in_mass = expand_surface_to_3D(
                     xr.zeros_like(self.ds["sos"]), self.ds["lev_outer"]
                 )
+            else:
+                raise ValueError(f"termcode {termcode} not yet supported.")
             return {
                 "scalar": {"array": self.ds[tendcode]},
                 "tendency": {"array": tend_arr, "extensive": True, "boundary": True},
@@ -427,72 +435,76 @@ class wmt:
                 return G
             return F_transformed
 
-    ### Helper function to groups terms based on tendencies (group_tend) and processes (group_process)
+    ### Helper function to groups terms based on density components (sum_components)
+    ### and physical processes (group_processes)
     # Calculate the sum of grouped terms
     def _sum(self, ds, newterm, terms):
         das = []
         for term in terms:
             if term in ds:
                 das.append(ds[term])
-                del ds[term]
         if len(das):
             ds[newterm] = sum(das)
 
-    # group_process == True and group_tend == False
-    def _group_process(self, F):
+    def _group_processes(self, F):
         if F is None:
             return
-        self._sum(
-            F,
-            "forcing_heat",
-            [
-                "boundary_forcing_heat_tendency",
-                "frazil_heat_tendency",
-                "internal_heat_heat_tendency",
-            ],
-        )
-        self._sum(F, "diffusion_heat", ["opottempdiff", "opottemppmdiff"])
-        self._sum(F, "forcing_salt", ["boundary_forcing_salt_tendency"])
-        self._sum(F, "diffusion_salt", ["osaltdiff", "osaltpmdiff"])
+        for component in ["heat", "salt"]:
+            process_dict = getattr(self, f"processes_{component}_dict")
+            self._sum(
+                F,
+                f"external_forcing_{component}",
+                [
+                    process_dict["boundary forcing"],
+                    process_dict["frazil ice"],
+                    process_dict["geothermal"],
+                ],
+            )
+            self._sum(
+                F,
+                f"diffusion_{component}",
+                [
+                    process_dict["vertical diffusion"],
+                    process_dict["neutral diffusion"]
+                ]
+            )
+            self._sum(
+                F,
+                f"advection_{component}",
+                [
+                    process_dict["horizontal advection"],
+                    process_dict["vertical advection"]
+                ]
+            )
+            self._sum(
+                F,
+                f"diabatic_forcing_{component}",
+                [
+                    f"external_forcing_{component}",
+                    f"diffusion_{component}"
+                ]
+            )
         return F
 
-    # group_process == True and group_tend == True
-    def _group_process_tend(self, F):
+    def _sum_components(self, F, group_processes = False):
         if F is None:
             return
-        self._sum(
-            F,
-            "forcing",
-            [
-                "boundary_forcing_heat_tendency",
-                "frazil_heat_tendency",
-                "internal_heat_heat_tendency",
-                "boundary_forcing_salt_tendency",
-            ],
-        )
-        self._sum(
-            F,
-            "diffusion",
-            ["opottempdiff", "opottemppmdiff", "osaltdiff", "osaltpmdiff"],
-        )
+        
+        for proc in self.processes():
+            self._sum(
+                F,
+                proc,
+                [
+                    getattr(self, f"processes_{component}_dict")[proc]
+                    for component in ["heat", "salt"]
+                ]
+            )
+        if group_processes:
+            for proc in ["external_forcing", "diffusion", "advection", "diabatic_forcing"]:
+                self._sum(F, proc, [f"{proc}_{component}" for component in ["heat", "salt"]])
         return F
 
-    # group_process == False and group_tend == True
-    def _group_tend(self, F):
-        if F is None:
-            return
-        self._sum(
-            F,
-            "boundary_forcing",
-            ["boundary_forcing_heat_tendency", "boundary_forcing_salt_tendency"],
-        )
-        self._sum(F, "vertical_diffusion", ["opottempdiff", "osaltdiff"])
-        self._sum(F, "neutral_diffusion", ["opottemppmdiff", "osaltpmdiff"])
-        self._sum(F, "frazil_ice", ["frazil_heat_tendency"])
-        self._sum(F, "geothermal", ["internal_heat_heat_tendency"])
-        return F
-
-    def F(self, lstr, term=None, group_tend=True, group_process=False, **kwargs):
+    def F(self, lstr, term=None, sum_components=True, group_processes=False, **kwargs):
         """
         Wrapper function for calc_F_transformed() to group terms based on tendency terms (heat, salt) and processes.
         """
@@ -501,7 +513,7 @@ class wmt:
         if term is None:
             Fs = []
             for term in self.processes(False):
-                _F = self.F(lstr, term, group_tend=False, group_process=False, **kwargs)
+                _F = self.F(lstr, term, sum_components=False, group_processes=False, **kwargs)
                 if _F is not None:
                     Fs.append(_F)
             F = xr.merge(Fs)
@@ -511,12 +523,10 @@ class wmt:
             if isinstance(F, xr.DataArray):
                 F = F.to_dataset()
 
-        if group_process == True and group_tend == False:
-            F = self._group_process(F)
-        elif group_process == True and group_tend == True:
-            F = self._group_process_tend(F)
-        elif group_process == False and group_tend == True:
-            F = self._group_tend(F)
+        if group_processes:
+            F = self._group_processes(F)
+        if sum_components:
+            F = self._sum_components(F, group_processes=group_processes)
 
         if isinstance(F, xr.Dataset) and len(F) == 1:
             return F[list(F.data_vars)[0]]
@@ -539,31 +549,29 @@ class wmt:
         bins : array like, optional
             np.array with lambda values specifying the edges for each bin. If not specidied, array will be automatically derived from
             the scalar field of lambda (e.g., temperature).
-        group_tend : boolean, optional
+        sum_components : boolean, optional
             Specify whether heat and salt tendencies are summed together (True) or kept separated (False). True by default.
-        group_process : boolean, optional
+        group_processes: boolean, optional
             Specify whether process terms are summed to categories forcing and diffusion. False by default.
 
         Returns
         -------
         G : {xarray.DataArray, xarray.Dataset}
-            The water mass transformation along lamba for each time. G is xarray.DataArray when term is specified and group_tend=True.
-            G is xarray.DataSet when multiple terms are included (term=None) or group_tend=False.
+            The water mass transformation along lamba for each time. G is xarray.DataArray when term is specified and sum_components=True.
+            G is xarray.DataSet when multiple terms are included (term=None) or sum_components=False.
         """
 
         # Extract default function args
-        group_process = kwargs.pop("group_process", False)
-        group_tend = kwargs.pop("group_tend", True)
+        group_processes = kwargs.pop("group_processes", False)
+        sum_components = kwargs.pop("sum_components", True)
         # call the base function
         G = self.calc_G(lstr, *args, **kwargs)
 
         # process this function arguments
-        if group_process == True and group_tend == False:
-            G = self._group_process(G)
-        elif group_process == True and group_tend == True:
-            G = self._group_process_tend(G)
-        elif group_process == False and group_tend == True:
-            G = self._group_tend(G)
+        if group_processes:
+            G = self._group_processes(G)
+        if sum_components:
+            G = self._sum_components(G, group_processes=group_processes)
 
         if isinstance(G, xr.Dataset) and len(G) == 1:
             return G[list(G.data_vars)[0]]
@@ -591,16 +599,16 @@ class wmt:
         method : str {'xgcm' (default), 'xhistogram'}
             The calculation can be either done with the xgcm `transform` method (default) or xhistogram.
             If not specified, default will be used.
-        group_tend : boolean, optional
+        sum_components : boolean, optional
             Specify whether heat and salt tendencies are summed together (True) or kept separated (False). True by default.
-        group_process : boolean, optional
+        group_processes : boolean, optional
             Specify whether process terms are summed to categories forcing and diffusion. False by default.
 
         Returns
         -------
         F_mean : {xarray.DataArray, xarray.Dataset}
-            Spatial field of mean transformation at a given (set of) lambda value(s). F_mean is xarray.DataArray when term is specified and group_tend=True.
-            F_mean is xarray.DataSet when multiple terms are included (term=None) or group_tend=False.
+            Spatial field of mean transformation at a given (set of) lambda value(s). F_mean is xarray.DataArray when term is specified and sum_components=True.
+            F_mean is xarray.DataSet when multiple terms are included (term=None) or sum_components=False.
         """
 
         if len(args) == 3:
