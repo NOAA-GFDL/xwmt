@@ -15,13 +15,12 @@ from xwmt.compute import (
     lbin_percentile,
 )
 
-
 class wmt:
     """
     A class object with multiple functions to do full 3d watermass transformation analysis.
     """
 
-    def __init__(self, ds, Cp=3992.0, rho=1035.0, alpha=None, beta=None, teos10=True):
+    def __init__(self, ds, Cp=3992.0, rho_ref=1035.0, alpha=None, beta=None, teos10=True):
         """
         Create a new watermass transformation object from an input dataset.
 
@@ -31,8 +30,8 @@ class wmt:
             Contains the relevant tendencies and/or surface fluxes along with grid information.
         Cp : float, optional
             Specify value for the specific heat capacity (in J/kg/K). Cp=3992.0 by default.
-        rho : float, optional
-            Specify value for the reference seawater density (in kg/m^3). rho=1035.0 by default.
+        rho_ref : float, optional
+            Specify value for the reference seawater density (in kg/m^3). rho_ref=1035.0 by default.
         alpha : float, optional
             Specify value for the thermal expansion coefficient (in 1/K). alpha=None by default.
             If alpha is not given (i.e., alpha=None), it is derived from salinty and temperature fields using `gsw_alpha`.
@@ -46,7 +45,7 @@ class wmt:
         self.ds = ds.copy()
         self.xgrid = get_xgcm_grid_vertical(self.ds, periodic=False)
         self.Cp = Cp
-        self.rho = rho
+        self.rho_ref = rho_ref
         if alpha is not None:
             self.alpha = alpha
         if beta is not None:
@@ -58,24 +57,24 @@ class wmt:
     terms_dict = {"heat": "thetao", "salt": "so"}
 
     processes_heat_dict = {
-        "Eulerian tendency": "opottemptend",
-        "horizontal advection": "T_advection_xy",
-        "vertical advection": "Th_tendency_vert_remap",
-        "boundary forcing": "boundary_forcing_heat_tendency",
-        "vertical diffusion": "opottempdiff",
-        "neutral diffusion": "opottemppmdiff",
-        "frazil ice": "frazil_heat_tendency",
+        "Eulerian_tendency": "opottemptend",
+        "horizontal_advection": "T_advection_xy",
+        "vertical_advection": "Th_tendency_vert_remap",
+        "boundary_forcing": "boundary_forcing_heat_tendency",
+        "vertical_diffusion": "opottempdiff",
+        "neutral_diffusion": "opottemppmdiff",
+        "frazil_ice": "frazil_heat_tendency",
         "geothermal": "internal_heat_heat_tendency",
     }
 
     processes_salt_dict = {
-        "Eulerian tendency": "osalttend",
-        "horizontal advection": "S_advection_xy",
-        "vertical advection": "Sh_tendency_vert_remap",
-        "boundary forcing": "boundary_forcing_salt_tendency",
-        "vertical diffusion": "osaltdiff",
-        "neutral diffusion": "osaltpmdiff",
-        "frazil ice": None,
+        "Eulerian_tendency": "osalttend",
+        "horizontal_advection": "S_advection_xy",
+        "vertical_advection": "Sh_tendency_vert_remap",
+        "boundary_forcing": "boundary_forcing_salt_tendency",
+        "vertical_diffusion": "osaltdiff",
+        "neutral_diffusion": "osaltpmdiff",
+        "frazil_ice": None,
         "geothermal": None,
     }
 
@@ -99,7 +98,7 @@ class wmt:
         elif tendency == "salt":
             termcode = self.processes_salt_dict.get(term, None)
         else:
-            warnings.warn("Tendency is not defined")
+            warnings.warn(f"Tendency {tendency} is not defined")
             return
         tendcode = self.terms_dict.get(tendency, None)
         return (tendcode, termcode)
@@ -123,7 +122,7 @@ class wmt:
     def dd(self, tendency, term):
         (tendcode, termcode) = self.process(tendency, term)
         # tendcode: tendency form (heat or salt)
-        # termcode: process term (e.g., boundary forcing)
+        # termcode: process term (e.g., boundary_forcing)
         if termcode is None or termcode not in self.ds:
             return
 
@@ -133,7 +132,7 @@ class wmt:
         else:
             tend_arr = self.ds[termcode]
 
-        if term == "boundary forcing":
+        if term == "boundary_forcing":
             if termcode == "boundary_forcing_heat_tendency":
                 # Need to multiply mass flux by Cp to convert to energy flux (convert to W/m^2/degC)
                 flux = (
@@ -278,7 +277,7 @@ class wmt:
             dd = self.dd("heat", term)
             if dd is not None:
                 # Transformation rate (degC m/s)
-                F = calc_hldot_tendency(self.xgrid, dd) / (self.rho * self.Cp)
+                F = calc_hldot_tendency(self.xgrid, dd) / (self.rho_ref * self.Cp)
                 # Scalar field (degC)
                 l = dd["scalar"]["array"]
                 return F, l
@@ -288,7 +287,7 @@ class wmt:
             dd = self.dd("salt", term)
             if dd is not None:
                 # Transformation rate (g/kg m/s)
-                F = calc_hldot_tendency(self.xgrid, dd) / self.rho
+                F = calc_hldot_tendency(self.xgrid, dd) / self.rho_ref
                 # Scalar field (salinity units, psu, g/kg)
                 # TODO: Accurately define salinity field
                 l = dd["scalar"]["array"]
@@ -455,8 +454,8 @@ class wmt:
                 F,
                 f"external_forcing_{component}",
                 [
-                    process_dict["boundary forcing"],
-                    process_dict["frazil ice"],
+                    process_dict["boundary_forcing"],
+                    process_dict["frazil_ice"],
                     process_dict["geothermal"],
                 ],
             )
@@ -464,16 +463,16 @@ class wmt:
                 F,
                 f"diffusion_{component}",
                 [
-                    process_dict["vertical diffusion"],
-                    process_dict["neutral diffusion"]
+                    process_dict["vertical_diffusion"],
+                    process_dict["neutral_diffusion"]
                 ]
             )
             self._sum(
                 F,
                 f"advection_{component}",
                 [
-                    process_dict["horizontal advection"],
-                    process_dict["vertical advection"]
+                    process_dict["horizontal_advection"],
+                    process_dict["vertical_advection"]
                 ]
             )
             self._sum(
@@ -482,6 +481,14 @@ class wmt:
                 [
                     f"external_forcing_{component}",
                     f"diffusion_{component}"
+                ]
+            )
+            self._sum(
+                F,
+                f"total_tendency_{component}",
+                [
+                    f"advection_{component}",
+                    f"diabatic_forcing_{component}"
                 ]
             )
         return F
@@ -500,7 +507,7 @@ class wmt:
                 ]
             )
         if group_processes:
-            for proc in ["external_forcing", "diffusion", "advection", "diabatic_forcing"]:
+            for proc in ["external_forcing", "diffusion", "advection", "diabatic_forcing", "total_tendency"]:
                 self._sum(F, proc, [f"{proc}_{component}" for component in ["heat", "salt"]])
         return F
 
@@ -542,7 +549,7 @@ class wmt:
         lstr : str
             Specifies lambda (e.g., 'theta', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
         term : str, optional
-            Specifies process term (e.g., 'boundary forcing', 'vertical diffusion', etc.). Use `processes()` to list all available terms.
+            Specifies process term (e.g., 'boundary_forcing', 'vertical_diffusion', etc.). Use `processes()` to list all available terms.
         method : str {'xgcm' (default), 'xhistogram'}
             The calculation can be either done with the xgcm `transform` method (default) or xhistogram.
             If not specified, default will be used.
@@ -587,7 +594,7 @@ class wmt:
         lstr : str
             Specifies lambda (e.g., 'theta', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
         term : str, optional
-            Specifies process term (e.g., 'boundary forcing', 'vertical diffusion', etc.). Use `processes()` to list all available terms.
+            Specifies process term (e.g., 'boundary_forcing', 'vertical_diffusion', etc.). Use `processes()` to list all available terms.
         val : float or ndarray
             Value(s) of lambda for which isosurface(s) is/are defined
         ti : str
