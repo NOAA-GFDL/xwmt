@@ -15,9 +15,9 @@ from xwmt.compute import (
     lbin_percentile,
 )
 
-class wmt:
+class WaterMassTransformations:
     """
-    A class object with multiple functions to do full 3d watermass transformation analysis.
+    A class object with multiple methods to do full 3d watermass transformation analysis.
     """
 
     def __init__(self, ds, Cp=3992.0, rho_ref=1035.0, alpha=None, beta=None, teos10=True):

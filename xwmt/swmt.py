@@ -15,7 +15,7 @@ from xwmt.compute import (
 )
 
 
-class swmt:
+class SurfaceWaterMassTransformation:
     """
     A class object with multiple functions to do 2d surface watermass transformation analysis.
     """
