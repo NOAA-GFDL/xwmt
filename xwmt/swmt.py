@@ -393,7 +393,7 @@ class SurfaceWaterMassTransformations:
 
         return (None, None)
 
-    def lbin_percentile(self, l, percentile=[0.05, 0.95], bins=30):
+    def bin_percentile(self, l, percentile=[0.05, 0.95], bins=30):
         """Specify the percentile and number of the bins"""
         l_sample = l.isel(time=0).chunk({"y": -1, "x": -1})
         vmin, vmax = l_sample.quantile(percentile, dim=l_sample.dims)
@@ -409,7 +409,7 @@ class SurfaceWaterMassTransformations:
         F, l = self.calc_Fl(lambda_name, mass=mass, salt=salt, heat=heat, decompose=decompose)
 
         if bins is None:
-            bins = self.lbin_percentile(
+            bins = self.bin_percentile(
                 l
             )  # automatically find the right range based on the distribution in l
 
@@ -455,7 +455,7 @@ class SurfaceWaterMassTransformations:
                 lambda_name, mass=mass, salt=salt, heat=heat, decompose=decompose
             )
             if bins is None and l is not None:
-                bins = self.lbin_percentile(
+                bins = self.bin_percentile(
                     l
                 )  # automatically find the right range based on the distribution in l
             G = []
@@ -483,7 +483,7 @@ class SurfaceWaterMassTransformations:
                 lambda_name, mass=mass, salt=salt, heat=heat, decompose=decompose
             )
             if bins is None and l is not None:
-                bins = self.lbin_percentile(
+                bins = self.bin_percentile(
                     l
                 )  # automatically find the right range based on the distribution in l
             if F is not None and l is not None:
@@ -692,7 +692,7 @@ class SurfaceWaterMassTransformations:
             tendcode = lambda_name
 
         # Define bins based on val
-        kwargs["bins"] = lbin_define(np.min(val) - dl, np.max(val) + dl, dl)
+        kwargs["bins"] = bin_define(np.min(val) - dl, np.max(val) + dl, dl)
 
         # Calculate spatiotemporal field of transformation
         F = self.F(lambda_name, **kwargs)

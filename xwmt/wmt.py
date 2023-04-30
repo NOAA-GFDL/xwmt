@@ -15,12 +15,42 @@ from xwmt.compute import (
     bin_percentile,
 )
 
-class WaterMassTransformations:
+class WaterMass:
     """
     A class object with multiple methods to do full 3d watermass transformation analysis.
     """
 
-    def __init__(self, ds, cp=3992.0, rho_ref=1035.0, alpha=None, beta=None, teos10=True):
+    def __init__(self, ds, grid, alpha=None, beta=None, teos10=True):
+        """
+        Create a new watermass object from an input dataset.
+
+        Parameters
+        ----------
+        ds : xarray.Dataset
+            Contains the relevant tendencies and/or surface fluxes along with grid information.
+        alpha : float, optional
+            Specify value for the thermal expansion coefficient (in 1/K). alpha=None by default.
+            If alpha is not given (i.e., alpha=None), it is derived from salinty and temperature fields using `gsw_alpha`.
+        beta : float, optional
+            Specify value for the haline contraction coefficient (in kg/g). beta=None by default.
+            If beta is not given (i.e., beta=None), it is derived from salinty and temperature fields using `gsw_beta`.
+        teos10 : boolean, optional
+            Use Thermodynamic Equation Of Seawater - 2010 (TEOS-10). True by default.
+        """
+
+        self.ds = ds.copy()
+        self.grid = grid
+        if alpha is not None:
+            self.alpha = alpha
+        if beta is not None:
+            self.beta = beta
+        self.teos10 = teos10
+
+class WaterMassTransformations(WaterMass):
+    """
+    A class
+    """
+    def __init__(self, ds, grid, budgets_dict, cp=3992.0, rho_ref=1035.0, alpha=None, beta=None, teos10=True):
         """
         Create a new watermass transformation object from an input dataset.
 
@@ -41,48 +71,25 @@ class WaterMassTransformations:
         teos10 : boolean, optional
             Use Thermodynamic Equation Of Seawater - 2010 (TEOS-10). True by default.
         """
-
-        self.ds = ds.copy()
-        self.xgrid = get_xgcm_grid_vertical(self.ds, periodic=False)
+        super().__init__(ds, grid, alpha=alpha, beta=beta, teos10=teos10)
+        self.budgets_dict = budgets_dict
         self.cp = cp
         self.rho_ref = rho_ref
-        if alpha is not None:
-            self.alpha = alpha
-        if beta is not None:
-            self.beta = beta
-        self.teos10 = teos10
+        
+        # Set of terms for (1) heat and (2) salt fluxes
+        # Use processes as default, fluxes when surface=True
+        self.terms_dict = {
+            "heat": self.budgets_dict['heat']['lambda'],
+            "salt": self.budgets_dict['salt']['lambda']
+        }
 
-    # Set of terms for (1) heat and (2) salt fluxes
-    # Use processes as default, fluxes when surface=True
-    terms_dict = {"heat": "thetao", "salt": "so"}
-
-    processes_heat_dict = {
-        "Eulerian_tendency": "opottemptend",
-        "horizontal_advection": "T_advection_xy",
-        "vertical_advection": "Th_tendency_vert_remap",
-        "boundary_forcing": "boundary_forcing_heat_tendency",
-        "vertical_diffusion": "opottempdiff",
-        "neutral_diffusion": "opottemppmdiff",
-        "frazil_ice": "frazil_heat_tendency",
-        "geothermal": "internal_heat_heat_tendency",
-    }
-
-    processes_salt_dict = {
-        "Eulerian_tendency": "osalttend",
-        "horizontal_advection": "S_advection_xy",
-        "vertical_advection": "Sh_tendency_vert_remap",
-        "boundary_forcing": "boundary_forcing_salt_tendency",
-        "vertical_diffusion": "osaltdiff",
-        "neutral_diffusion": "osaltpmdiff",
-        "frazil_ice": None,
-        "geothermal": None,
-    }
-
-    lambdas_dict = {
-        "heat": ["theta"],
-        "salt": ["salt"],
-        "density": ["sigma0", "sigma1", "sigma2", "sigma3", "sigma4"],
-    }
+        self.processes_heat_dict = self.budgets_dict['heat']['rhs']
+        self.processes_salt_dict = self.budgets_dict['salt']['rhs']
+        self.lambdas_dict = {
+            "heat": "temperature",
+            "salt": "salinity",
+            "density": ["sigma0", "sigma1", "sigma2", "sigma3", "sigma4"],
+        }
 
     def lambdas(self, lambda_name=None):
         if lambda_name is None:
@@ -136,15 +143,15 @@ class WaterMassTransformations:
             if termcode == "boundary_forcing_heat_tendency":
                 # Need to multiply mass flux by cp to convert to energy flux (convert to W/m^2/degC)
                 flux = (
-                    expand_surface_to_3d(self.ds["wfo"], self.ds["lev_outer"]) * self.cp
+                    expand_surface_to_3d(self.ds["wfo"], self.ds["z_i"]) * self.cp
                 )
                 scalar_in_mass = expand_surface_to_3d(
-                    self.ds["tos"], self.ds["lev_outer"]
+                    self.ds["tos"], self.ds["z_i"]
                 )
             elif termcode == "boundary_forcing_salt_tendency":
-                flux = expand_surface_to_3d(self.ds["wfo"], self.ds["lev_outer"])
+                flux = expand_surface_to_3d(self.ds["wfo"], self.ds["z_i"])
                 scalar_in_mass = expand_surface_to_3d(
-                    xr.zeros_like(self.ds["sos"]), self.ds["lev_outer"]
+                    xr.zeros_like(self.ds["sos"]), self.ds["z_i"]
                 )
             else:
                 raise ValueError(f"termcode {termcode} not yet supported.")
@@ -170,12 +177,12 @@ class WaterMassTransformations:
             "alpha" not in vars(self) or "beta" not in vars(self) or self.teos10
         ) and "p" not in vars(self):
             self.p = xr.apply_ufunc(
-                gsw.p_from_z, -self.ds["lev"], self.ds["lat"], 0, 0, dask="parallelized"
+                gsw.p_from_z, -self.ds["z_l"], self.ds["lat"], 0, 0, dask="parallelized"
             )
         if self.teos10 and "sa" not in vars(self):
             self.sa = xr.apply_ufunc(
                 gsw.SA_from_SP,
-                self.ds["so"],
+                self.ds[self.terms_dict['salt']],
                 self.p,
                 self.ds["lon"],
                 self.ds["lat"],
@@ -183,11 +190,11 @@ class WaterMassTransformations:
             )
         if self.teos10 and "ct" not in vars(self):
             self.ct = xr.apply_ufunc(
-                gsw.CT_from_t, self.sa, self.ds["thetao"], self.p, dask="parallelized"
+                gsw.CT_from_t, self.sa, self.ds[self.terms_dict['heat']], self.p, dask="parallelized"
             )
         if not self.teos10 and ("sa" not in vars(self) or "ct" not in vars(self)):
-            self.sa = self.ds.so
-            self.ct = self.ds.thetao
+            self.sa = self.ds[self.terms_dict['salt']]
+            self.ct = self.ds[self.terms_dict['heat']]
 
         # Calculate thermal expansion coefficient alpha (1/K)
         if "alpha" not in vars(self):
@@ -251,13 +258,13 @@ class WaterMassTransformations:
 
         datadict = self.datadict("heat", term)
         if datadict is not None:
-            heat_tend = calc_hlamdot_tendency(self.xgrid, self.datadict("heat", term))
+            heat_tend = calc_hlamdot_tendency(self.grid, self.datadict("heat", term))
             # Density tendency due to heat flux (kg/s/m^2)
             rho_tend_heat = -(alpha / self.cp) * heat_tend
 
         datadict = self.datadict("salt", term)
         if datadict is not None:
-            salt_tend = calc_hlamdot_tendency(self.xgrid, self.datadict("salt", term))
+            salt_tend = calc_hlamdot_tendency(self.grid, self.datadict("salt", term))
             # Density tendency due to salt/salinity (kg/s/m^2)
             rho_tend_salt = beta * salt_tend
 
@@ -272,18 +279,18 @@ class WaterMassTransformations:
             Specifies process term
         """
 
-        # Get layer-integrated potential temperature tendency from tendency of heat (in W/m^2), lambda = theta
-        if lambda_name == "theta":
+        # Get layer-integrated potential temperature tendency from tendency of heat (in W/m^2), lambda = temperature
+        if lambda_name == "temperature":
             datadict = self.datadict("heat", term)
             if datadict is not None:
-                hlamdot = calc_hlamdot_tendency(self.xgrid, datadict) / (self.rho_ref * self.cp)
+                hlamdot = calc_hlamdot_tendency(self.grid, datadict) / (self.rho_ref * self.cp)
                 lam = datadict["scalar"]["array"]
 
         # Get layer-integrated salinity tendency tendency from tendency of salt (in g/s/m^2), lambda = salt
-        elif lambda_name == "salt":
+        elif lambda_name == "salinity":
             datadict = self.datadict("salt", term)
             if datadict is not None:
-                hlamdot = calc_hlamdot_tendency(self.xgrid, datadict) / self.rho_ref
+                hlamdot = calc_hlamdot_tendency(self.grid, datadict) / self.rho_ref
                 # TODO: Accurately define salinity field (What does this mean? - HFD)
                 lam = datadict["scalar"]["array"]
 
@@ -296,10 +303,10 @@ class WaterMassTransformations:
             for idx, tend in enumerate(self.terms_dict.keys()):
                 hlamdot[tend] = rhos[idx]
             lam = self.get_density(lambda_name)[2]
-            
+        
         else:
             raise ValueError(f"{lambda_name} is not a supported lambda.")
-            
+        
         return hlamdot, lam
 
     def transform_hlamdot(self, lambda_name, term, bins=None):
@@ -318,8 +325,8 @@ class WaterMassTransformations:
 
         # Interpolate lambda to the cell interfaces
         lam_i = (
-            self.xgrid.interp(lam, "Z", boundary="extend")
-            .chunk({"lev_outer": -1})
+            self.grid.interp(lam, "Z", boundary="extend")
+            .chunk({self.grid.axes['Z'].coords['outer']: -1})
             .rename(lam.name)
         )
 
@@ -330,7 +337,7 @@ class WaterMassTransformations:
                 if hlamdot[tend] is not None:
                     hlamdot_transformed.append(
                         (
-                            self.xgrid.transform(
+                            self.grid.transform(
                                 hlamdot[tend],
                                 "Z",
                                 target=bins,
@@ -343,10 +350,10 @@ class WaterMassTransformations:
             hlamdot_transformed = xr.merge(hlamdot_transformed)
         else:
             (tendcode, termcode) = self.process(
-                "salt" if lambda_name == "salt" else "heat", term
+                "salt" if lambda_name == "salinity" else "heat", term
             )
             hlamdot_transformed = (
-                self.xgrid.transform(
+                self.grid.transform(
                     hlamdot, "Z", target=bins, target_data=lam_i, method="conservative"
                 )
                 / np.diff(bins)
@@ -369,7 +376,8 @@ class WaterMassTransformations:
 
         hlamdot_transformed = self.transform_hlamdot(lambda_name, term, bins=bins)
         if hlamdot_transformed is not None and len(hlamdot_transformed): # What is the point of this?
-            wmt = (hlamdot_transformed * self.ds["areacello"]).sum(["x", "y"])
+            dA = self.grid.get_metric(hlamdot_transformed, ['X', 'Y'])
+            wmt = (hlamdot_transformed * dA).sum(dA.dims)
             # rename dataarray only (not dataset)
             if isinstance(wmt, xr.DataArray):
                 return wmt.rename(hlamdot_transformed.name)
@@ -457,7 +465,6 @@ class WaterMassTransformations:
         """
         Wrapper function for transform_hlamdot() to group terms based on tendency terms (heat, salt) and processes.
         """
-
         # If term is not given, use all available process terms
         if term is None:
             Fs = []
@@ -489,7 +496,7 @@ class WaterMassTransformations:
         Parameters
         ----------
         lambda_name : str
-            Specifies lambda (e.g., 'theta', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
+            Specifies lambda (e.g., 'temperature', 'salinity', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
         term : str, optional
             Specifies process term (e.g., 'boundary_forcing', 'vertical_diffusion', etc.). Use `processes()` to list all available terms.
         bins : array like, optional
@@ -531,7 +538,7 @@ class WaterMassTransformations:
         Parameters
         ----------
         lambda_name : str
-            Specifies lambda (e.g., 'theta', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
+            Specifies lambda (e.g., 'temperature', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
         term : str, optional
             Specifies process term (e.g., 'boundary_forcing', 'vertical_diffusion', etc.). Use `processes()` to list all available terms.
         val : float or ndarray
