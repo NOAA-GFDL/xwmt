@@ -6,16 +6,15 @@ import xarray as xr
 from xhistogram.xarray import histogram
 
 from xwmt.compute import (
-    Jlmass_from_Qm_lm_l,
-    expand_surface_to_3D,
+    Jlammass_from_Qm_lm_l,
+    expand_surface_to_3d,
     get_xgcm_grid_vertical,
-    hldot_from_Jl,
-    hldot_from_Ldot_hldotmass,
-    lbin_define,
+    hlamdot_from_Jlam,
+    hlamdot_from_Ldot_hlamdotmass,
+    bin_define,
 )
 
-
-class SurfaceWaterMassTransformation:
+class SurfaceWaterMassTransformations:
     """
     A class object with multiple functions to do 2d surface watermass transformation analysis.
     """
@@ -49,18 +48,18 @@ class SurfaceWaterMassTransformation:
         "density": ["sigma0", "sigma1", "sigma2", "sigma3", "sigma4"],
     }
 
-    def lambdas(self, lstr=None):
-        if lstr is None:
+    def lambdas(self, lambda_name=None):
+        if lambda_name is None:
             return sum(self.lambdas_dict.values(), [])
         else:
-            return self.lambdas_dict.get(lstr, None)
+            return self.lambdas_dict.get(lambda_name, None)
 
-    def fluxes(self, lstr=None):
-        if lstr == "mass":
+    def fluxes(self, lambda_name=None):
+        if lambda_name == "mass":
             dic = self.flux_mass_dict
-        elif lstr == "salt":
+        elif lambda_name == "salt":
             dic = self.flux_salt_dict
-        elif lstr == "heat":
+        elif lambda_name == "heat":
             dic = self.flux_heat_dict
         else:
             return
@@ -120,7 +119,7 @@ class SurfaceWaterMassTransformation:
             self.ds["lev"] = xr.DataArray(np.array([2.5]), dims="lev")
             for var in self.ds.keys():
                 if var in self.variables:
-                    self.ds[var] = expand_surface_to_3D(
+                    self.ds[var] = expand_surface_to_3d(
                         self.ds[var], self.ds["lev_outer"]
                     )
         # TODO: Add error message if lev and/or lev_outer in ds.
@@ -202,14 +201,14 @@ class SurfaceWaterMassTransformation:
             hldotmass = None
             if dd["flux"]["boundary"]:
                 if dd["boundary"]["mass"]:
-                    Jlmass = Jlmass_from_Qm_lm_l(
+                    Jlammass = Jlammass_from_Qm_lm_l(
                         dd["boundary"]["flux"],
                         dd["boundary"]["scalar_in_mass"],
                         dd["scalar"]["array"],
                     )
-                    hldotmass = hldot_from_Jl(self.xgrid, Jlmass, dim="Z")
+                    hldotmass = hldot_from_Jlam(self.xgrid, Jlammass, dim="Z")
             hldot = hldot_from_Ldot_hldotmass(
-                hldot_from_Jl(self.xgrid, dd["flux"]["array"], dim="Z"), hldotmass
+                hldot_from_Jlam(self.xgrid, dd["flux"]["array"], dim="Z"), hldotmass
             )
             return hldot
 
@@ -324,13 +323,13 @@ class SurfaceWaterMassTransformation:
 
         return rho_tend_heat, rho_tend_salt
 
-    def calc_Fl(self, lstr, mass="total", salt="total", heat="total", decompose=None):
+    def calc_Fl(self, lambda_name, mass="total", salt="total", heat="total", decompose=None):
         """
         Get transformation rate (* m/s) and corresponding lambda
 
         Parameters
         ----------
-        lstr : str
+        lambda_name : str
             Specifies lambda (e.g., 'theta', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of
             available lambdas.
         mass : str, optional
@@ -352,7 +351,7 @@ class SurfaceWaterMassTransformation:
         """
 
         # Get F from tendency of heat (in W/m^2), lambda = theta
-        if lstr == "theta":
+        if lambda_name == "theta":
             # degC m/s
             dd = self.dd("heat", mass=mass, salt=salt, heat=heat, decompose=decompose)
             if dd is not None:
@@ -366,7 +365,7 @@ class SurfaceWaterMassTransformation:
                 return F, l
 
         # Get F from tendency of salt (in g/s/m^2), lambda = salt
-        elif lstr == "salt":
+        elif lambda_name == "salt":
             # g/kg m/s
             dd = self.dd("salt", mass=mass, salt=salt, heat=heat, decompose=decompose)
             if dd is not None:
@@ -382,13 +381,13 @@ class SurfaceWaterMassTransformation:
         # Get F from tendencies of density (in kg/s/m^2), lambda = density
         # Here we want to output 2 transformation rates:
         # (1) transformation due to heat tend, (2) transformation due to salt tend.
-        elif lstr in self.lambdas("density"):
+        elif lambda_name in self.lambdas("density"):
             # kg/m^3 m/s
             F = {}
             rhos = self.rho_tend(mass=mass, salt=salt, heat=heat, decompose=decompose)
             for idx, tend in enumerate(self.terms_dict.keys()):
                 F[tend] = rhos[idx]
-            (alpha, beta, l) = self.get_density(lstr)
+            (alpha, beta, l) = self.get_density(lambda_name)
             l = l.sum("lev_outer").where(self.ds["wet"] == 1).expand_dims("lev")
             return F, l
 
@@ -401,20 +400,20 @@ class SurfaceWaterMassTransformation:
         return np.linspace(vmin, vmax, bins)
 
     def calc_F_transformed(
-        self, lstr, bins=None, mass="total", salt="total", heat="total", decompose=None
+        self, lambda_name, bins=None, mass="total", salt="total", heat="total", decompose=None
     ):
         """
         Transform to lambda space
         """
 
-        F, l = self.calc_Fl(lstr, mass=mass, salt=salt, heat=heat, decompose=decompose)
+        F, l = self.calc_Fl(lambda_name, mass=mass, salt=salt, heat=heat, decompose=decompose)
 
         if bins is None:
             bins = self.lbin_percentile(
                 l
             )  # automatically find the right range based on the distribution in l
 
-        if lstr in self.lambdas("density"):
+        if lambda_name in self.lambdas("density"):
             F_transformed = []
             for tend in self.terms_dict.keys():
                 if F[tend] is not None:
@@ -439,7 +438,7 @@ class SurfaceWaterMassTransformation:
 
     def calc_G(
         self,
-        lstr,
+        lambda_name,
         method="xhistogram",
         bins=None,
         mass="total",
@@ -451,9 +450,9 @@ class SurfaceWaterMassTransformation:
         Water mass transformation (G)
         """
 
-        if method == "xhistogram" and lstr in self.lambdas("density"):
+        if method == "xhistogram" and lambda_name in self.lambdas("density"):
             F, l = self.calc_Fl(
-                lstr, mass=mass, salt=salt, heat=heat, decompose=decompose
+                lambda_name, mass=mass, salt=salt, heat=heat, decompose=decompose
             )
             if bins is None and l is not None:
                 bins = self.lbin_percentile(
@@ -481,7 +480,7 @@ class SurfaceWaterMassTransformation:
             return xr.merge(G)
         elif method == "xhistogram":
             F, l = self.calc_Fl(
-                lstr, mass=mass, salt=salt, heat=heat, decompose=decompose
+                lambda_name, mass=mass, salt=salt, heat=heat, decompose=decompose
             )
             if bins is None and l is not None:
                 bins = self.lbin_percentile(
@@ -499,12 +498,12 @@ class SurfaceWaterMassTransformation:
                         / np.diff(bins)
                     )
                     .rename({l.name + "_bin": l.name})
-                    .rename(lstr)
+                    .rename(lambda_name)
                 )
                 return G
         elif method == "xgcm":
             F_transformed = self.calc_F_transformed(
-                lstr, bins=bins, mass=mass, salt=salt, heat=heat, decompose=decompose
+                lambda_name, bins=bins, mass=mass, salt=salt, heat=heat, decompose=decompose
             )
             if F_transformed is not None and len(F_transformed):
                 G = (F_transformed * self.ds["areacello"]).sum(["x", "y"])
@@ -522,13 +521,13 @@ class SurfaceWaterMassTransformation:
             ds[newterm] = sum(das)
         return ds
 
-    def G(self, lstr, *args, **kwargs):
+    def G(self, lambda_name, *args, **kwargs):
         """
         Water mass transformation (G)
 
         Parameters
         ----------
-        lstr : str
+        lambda_name : str
             Specifies lambda (e.g., 'theta', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of
             available lambdas.
         term : str, optional
@@ -573,44 +572,44 @@ class SurfaceWaterMassTransformation:
         sum_components = kwargs.pop("sum_components", True)
 
         if sum_components == True and decompose is None:
-            G = self.calc_G(lstr, *args, **kwargs)
+            G = self.calc_G(lambda_name, *args, **kwargs)
             self._sum(G, "total", ["heat", "salt"])
         elif sum_components == False and decompose is None:
-            G = self.calc_G(lstr, *args, **kwargs)
-        elif lstr == "theta" and decompose == "heat":
+            G = self.calc_G(lambda_name, *args, **kwargs)
+        elif lambda_name == "theta" and decompose == "heat":
             keys = [key for key in self.fluxes("heat")]
             G = []
             for key in keys:
-                _G = self.calc_G(lstr, heat=key, *args, **kwargs).rename(key)
+                _G = self.calc_G(lambda_name, heat=key, *args, **kwargs).rename(key)
                 G.append(_G)
             G = xr.merge(G)
-        elif lstr in self.lambdas("density") and decompose == "heat":
+        elif lambda_name in self.lambdas("density") and decompose == "heat":
             keys = [key for key in self.fluxes("heat")]
             G = []
             for key in keys:
                 _G = (
-                    self.calc_G(lstr, heat=key, *args, **kwargs)
+                    self.calc_G(lambda_name, heat=key, *args, **kwargs)
                     .rename({"heat": key})
                     .drop("salt")
                 )
                 G.append(_G)
             G = xr.merge(G)
-        elif lstr in self.lambdas("density") and decompose == "salt":
+        elif lambda_name in self.lambdas("density") and decompose == "salt":
             keys = [key for key in self.fluxes("salt")]
             G = []
             for key in keys:
                 _G = (
-                    self.calc_G(lstr, salt=key, *args, **kwargs)
+                    self.calc_G(lambda_name, salt=key, *args, **kwargs)
                     .rename({"salt": key})
                     .drop("heat")
                 )
                 G.append(_G)
             G = xr.merge(G)
-        elif lstr in self.lambdas("density") and decompose == "mass":
+        elif lambda_name in self.lambdas("density") and decompose == "mass":
             keys = [key for key in self.fluxes("mass")]
             G = []
             for key in keys:
-                _G = self.calc_G(lstr, mass=key, *args, **kwargs)
+                _G = self.calc_G(lambda_name, mass=key, *args, **kwargs)
                 if sum_components == True:
                     self._sum(_G, key, ["heat", "salt"])
                 else:
@@ -623,12 +622,12 @@ class SurfaceWaterMassTransformation:
         else:
             return G
 
-    def F(self, lstr, sum_components=True, **kwargs):
+    def F(self, lambda_name, sum_components=True, **kwargs):
         """
         Wrapper function for calc_F_transformed() with additional sum_components argument
         """
 
-        F_transformed = self.calc_F_transformed(lstr, **kwargs)
+        F_transformed = self.calc_F_transformed(lambda_name, **kwargs)
         if sum_components:
             self._sum(F_transformed, "total", ["heat", "salt"])
             if len(F_transformed) == 1:
@@ -637,13 +636,13 @@ class SurfaceWaterMassTransformation:
                 return F_transformed
         return F_transformed
 
-    def isosurface_mean(self, lstr, val, ti=None, tf=None, dl=0.1, **kwargs):
+    def isosurface_mean(self, lambda_name, val, ti=None, tf=None, dl=0.1, **kwargs):
         """
         Mean transformation across lambda isosurface(s).
 
         Parameters
         ----------
-        lstr : str
+        lambda_name : str
             Specifies lambda (e.g., 'theta', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of
             available lambdas.
         val : float or ndarray
@@ -682,21 +681,21 @@ class SurfaceWaterMassTransformation:
             F_mean is xarray.DataSet for decompose={'mass','salt','heat'} or sum_components=False.
         """
 
-        if lstr not in self.lambdas("density"):
-            tendency = [k for k, v in self.lambdas_dict.items() if v[0] == lstr]
+        if lambda_name not in self.lambdas("density"):
+            tendency = [k for k, v in self.lambdas_dict.items() if v[0] == lambda_name]
             if len(tendency) == 1:
                 tendcode = self.terms_dict.get(tendency[0], None)
             else:
                 warnings.warn("Tendency is not defined")
                 return
         else:
-            tendcode = lstr
+            tendcode = lambda_name
 
         # Define bins based on val
         kwargs["bins"] = lbin_define(np.min(val) - dl, np.max(val) + dl, dl)
 
         # Calculate spatiotemporal field of transformation
-        F = self.F(lstr, **kwargs)
+        F = self.F(lambda_name, **kwargs)
         # TODO: Preferred method should be ndays_standard if calendar type is 'noleap'. Thus, avoiding to load the full time array
         if "time_bounds" in self.ds:
             # Extract intervals (units are in ns)

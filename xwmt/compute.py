@@ -6,7 +6,6 @@ import xarray as xr
 import xgcm
 from xhistogram.xarray import histogram
 
-
 def zonal_mean(da, metrics):
     num = (da * metrics["areacello"] * metrics["wet"]).sum(dim=["x"])
     denom = (da / da * metrics["areacello"] * metrics["wet"]).sum(dim=["x"])
@@ -132,10 +131,9 @@ def get_xgcm_grid(ds, ds_grid, grid="z", metrics=True, **kwargs):
     return xgrid
 
 
-## Functions to obtain hldot
+## Functions to obtain hlamdot
 
-
-def Jlmass_from_Qm_lm_l(Qm, lm, l):
+def Jlammass_from_Qm_lm_l(Qm, lm, l):
     """
     Input
     -----
@@ -149,153 +147,80 @@ def Jlmass_from_Qm_lm_l(Qm, lm, l):
     return Qm * (lm - l)
 
 
-def hldot_from_Jl(xgrid, Jl, dim):
+def hlamdot_from_Jlam(xgrid, Jlam, dim):
     """
-    Calculation of hldot (cell-depth integral of scalar tendency)
+    Calculation of hlamdot (cell-depth integral of scalar tendency)
     provided various forms of input (fluxes, tendencies, intensive, extensive)
     """
     # For convergence, need to reverse the sign
-    ldot = -xgrid.derivative(Jl, dim)
-    hldot = ldot * xgrid.get_metric(ldot, "Z")
-    return hldot
+    lamdot = -xgrid.derivative(Jlam, dim)
+    hlamdot = lamdot * xgrid.get_metric(lamdot, "Z")
+    return hlamdot
 
 
-def calc_hldotmass(xgrid, dd):
+def calc_hlamdotmass(xgrid, dd):
     """
     Wrapper functions for boundary flux.
     """
-    hldotmass = dd["boundary"]["flux"]
+    hlamdotmass = dd["boundary"]["flux"]
     if dd["boundary"][
         "mass"
     ]:  # If boundary flux specified as mass rather than tracer flux
         scalar_i = xgrid.interp(
             dd["scalar"]["array"], "Z", boundary="extend"
         ).chunk({"lev_outer": -1})
-        Jlmass = Jlmass_from_Qm_lm_l(
-            hldotmass, dd["boundary"]["scalar_in_mass"], scalar_i
+        Jlammass = Jlammass_from_Qm_lm_l(
+            hlamdotmass, dd["boundary"]["scalar_in_mass"], scalar_i
         )
-        hldotmass = hldot_from_Jl(xgrid, Jlmass, dim="Z")
-    return hldotmass
+        hlamdotmass = hlamdot_from_Jlam(xgrid, Jlammass, dim="Z")
+    return hlamdotmass
 
 
-def hldot_from_Ldot_hldotmass(Ldot, hldotmass=None):
+def hlamdot_from_Ldot_hlamdotmass(Ldot, hlamdotmass=None):
     """
     Advective surface flux
     """
-    if hldotmass is not None:
-        return Ldot + hldotmass.fillna(0)
+    if hlamdotmass is not None:
+        return Ldot + hlamdotmass.fillna(0)
     return Ldot
 
 
-def hldot_from_ldot_h(ldot, h):
-    return h * ldot
+def hlamdot_from_lamdot_h(lamdot, h):
+    return h * lamdot
 
 
-def calc_hldot_tendency(xgrid, dd):
+def calc_hlamdot_tendency(xgrid, dd):
     """
     Wrapper functions to determine h times lambda_dot (vertically extensive tendency)
     """
 
     if dd["tendency"]["extensive"]:
-        hldotmass = None
+        hlamdotmass = None
 
         if dd["tendency"]["boundary"]:
-            hldotmass = calc_hldotmass(xgrid, dd)
+            hlamdotmass = calc_hlamdotmass(xgrid, dd)
 
-        hldot = hldot_from_Ldot_hldotmass(dd["tendency"]["array"], hldotmass)
+        hlamdot = hlamdot_from_Ldot_hlamdotmass(dd["tendency"]["array"], hlamdotmass)
 
     else:
-        hldot = hldot_from_ldot_h(
+        hlamdot = hlamdot_from_lamdot_h(
             dd["tendency"]["array"], xgrid.get_metric(dd["tendency"]["array"], "Z")
         )
 
-    return hldot
+    return hlamdot
 
-
-### Standalone and scaled-down version of ddterms functions for testing
-def get_density(ds, grid, density_str="sigma0"):
-    p = xr.apply_ufunc(gsw.p_from_z, -ds["lev"], grid["lat"], 0, 0, dask="parallelized")
-    sa = xr.apply_ufunc(
-        gsw.SA_from_SP, ds["so"], p, grid["lon"], grid["lat"], dask="parallelized"
-    )
-    ct = xr.apply_ufunc(gsw.CT_from_t, sa, ds["thetao"], p, dask="parallelized")
-
-    # Calculate thermal expansion coefficient alpha
-    alpha = xr.apply_ufunc(gsw.alpha, sa, ct, p, dask="parallelized")
-
-    # Calculate the haline contraction coefficient beta
-    beta = xr.apply_ufunc(gsw.beta, sa, ct, p, dask="parallelized")
-
-    # Calculate potentail density (kg/m^3)
-    if density_str == "sigma0":
-        density = xr.apply_ufunc(gsw.sigma0, sa, ct, dask="parallelized")
-    if density_str == "sigma1":
-        density = xr.apply_ufunc(gsw.sigma1, sa, ct, dask="parallelized")
-    if density_str == "sigma2":
-        density = xr.apply_ufunc(gsw.sigma2, sa, ct, dask="parallelized")
-    if density_str == "gamma_n":
-        # TODO: Function to calculate neutral density (gamma_n) and other neutral variables (gamma)
-        #density = gamma_n
-        raise NameError("Neutral density (gamma_n) is not yet a supported density variable.")
-
-    return alpha, beta, density.rename(density_str)
-
-
-def rho_tend(self, term):
-    heat_tend = calc_hldot_tendency(xgrid, dd_heat)
-    salt_tend = calc_hldot_tendency(xgrid, dd_salt)
-
-    alpha = get_density()[0]
-    beta = get_density()[1]
-
-    # Density tendency due to heat flux (kg/s/m^2)
-    rho_tend_heat = -(alpha / Cp) * heat_tend
-
-    # Density tendency due to salt/salinity (kg/s/m^2)
-    rho_tend_salt = beta * salt_tend
-
-    return rho_tend_heat, rho_tend_salt
-
-
-def calc_F_transformed(F, l, xgrid, bins):
-
-    F_transformed = xgrid.transform(
-        F, "Z", target=bins, target_data=l, method="conservative"
-    ) / np.diff(bins)
-    return F_transformed
-
-def calc_G(F, l, grid, bins, method="xgcm"):
-    if method == "xhistogram":
-
-        G = histogram(
-            l.where(~np.isnan(F)),
-            bins=[bins],
-            dim=["x", "y", "lev"],
-            weights=(F * grid["areacello"]).where(~np.isnan(F)),
-        ) / np.diff(bins)
-
-    elif method == "xgcm":
-
-        G = (
-            calc_F_transformed(F, l.copy().rename(l.name + "_bin"), xgrid, bins)
-            * grid["areacello"]
-        ).sum(["x", "y"])
-
-    return G
-
-
-def lbin_define(lmin, lmax, delta_l):
+def bin_define(lmin, lmax, delta_l):
     """Specify the range and widths of the lambda bins"""
     return np.arange(lmin - delta_l / 2.0, lmax + delta_l / 2.0, delta_l)
 
 
-def lbin_percentile(l, percentile=[0.05, 0.95], nbins=100):
+def bin_percentile(l, percentile=[0.05, 0.95], nbins=100):
     """Specify the percentile and number of the bins"""
     l_sample = l.isel(lev=0, time=0).chunk({"y": -1, "x": -1})
     vmin, vmax = l_sample.quantile(percentile, dim=l_sample.dims)
     return np.linspace(vmin, vmax, nbins)
 
 
-def expand_surface_to_3D(surfaceflux, z):
+def expand_surface_to_3d(surfaceflux, z):
     """Expand 2D surface array to 3D array with zeros below surface"""
     return surfaceflux.expand_dims({"lev_outer": z}).where(z == z[0], 0)
