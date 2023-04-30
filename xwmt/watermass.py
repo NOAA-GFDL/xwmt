@@ -69,10 +69,14 @@ class WaterMassTransformations(WaterMass):
         self.layer_tendencies[tracer] = {}
         for side, terms in self.budgets_dict[tracer].items():
             if side not in ['lhs', 'rhs']: continue
-            self.layer_tendencies[tracer][side] = {
-                term: self.ds[varname]
-                for term,varname in terms.items()
-            }
+            self.layer_tendencies[tracer][side] = {}
+            for term,varname in terms.items():
+                if varname not in self.ds: continue
+                var = self.ds[varname].copy()
+                
+                
+                self.layer_tendencies[tracer][side]['term'] = var
+                
         return self.layer_tendencies
     
     def map_transformations(self, tracer, bins):
