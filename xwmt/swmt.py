@@ -8,7 +8,6 @@ from xhistogram.xarray import histogram
 from xwmt.compute import (
     Jlammass_from_Qm_lm_l,
     expand_surface_to_3d,
-    get_xgcm_grid_vertical,
     hlamdot_from_Jlam,
     hlamdot_from_Ldot_hlamdotmass,
     bin_define,
