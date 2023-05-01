@@ -8,7 +8,6 @@ from xwmt.compute import (
     Jlammass_from_Qm_lm_l,
     calc_hlamdot_tendency,
     expand_surface_to_3d,
-    get_xgcm_grid_vertical,
     hlamdot_from_Jlam,
     hlamdot_from_Ldot_hlamdotmass,
     bin_define,
@@ -83,8 +82,8 @@ class WaterMassTransformations(WaterMass):
             "salt": self.budgets_dict['salt']['lambda']
         }
 
-        self.processes_heat_dict = self.budgets_dict['heat']['rhs']
-        self.processes_salt_dict = self.budgets_dict['salt']['rhs']
+        self.processes_heat_dict = {**self.budgets_dict['heat']['lhs'], **self.budgets_dict['heat']['rhs']}
+        self.processes_salt_dict = {**self.budgets_dict['salt']['lhs'], **self.budgets_dict['salt']['rhs']}
         self.lambdas_dict = {
             "heat": "temperature",
             "salt": "salinity",
@@ -307,7 +306,10 @@ class WaterMassTransformations(WaterMass):
         else:
             raise ValueError(f"{lambda_name} is not a supported lambda.")
         
-        return hlamdot, lam
+        try:
+            return hlamdot, lam
+        except NameError:
+            return None, None
 
     def transform_hlamdot(self, lambda_name, term, bins=None):
         """
