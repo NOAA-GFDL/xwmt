@@ -528,10 +528,7 @@ class WaterMassTransformations(WaterMass):
         if sum_components:
             G = self._sum_components(G, group_processes=group_processes)
 
-        if isinstance(G, xr.Dataset) and len(G) == 1:
-            return G[list(G.data_vars)[0]]
-        else:
-            return G
+        return G
 
     def isosurface_mean(self, *args, ti=None, tf=None, dl=0.1, **kwargs):
         """
