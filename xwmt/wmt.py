@@ -1,9 +1,9 @@
 import numpy as np
 import xarray as xr
-from xhistogram.xarray import histogram
 import gsw
 import warnings
 
+from xwmt.wm import WaterMass
 from xwmt.compute import (
     Jlammass_from_Qm_lm_l,
     calc_hlamdot_tendency,
@@ -13,97 +13,6 @@ from xwmt.compute import (
     bin_define,
     bin_percentile,
 )
-
-class WaterMass:
-    """
-    A class object with multiple methods to do full 3d watermass transformation analysis.
-    """
-
-    def __init__(
-        self,
-        ds,
-        grid,
-        t_name="thetao",
-        s_name="salt",
-        teos10=True,
-        cp=3992.0,
-        rho_ref=1035.0,
-        ):
-        """
-        Create a new watermass object from an input dataset.
-
-        Parameters
-        ----------
-        ds : xarray.Dataset
-            Contains the relevant tendencies and/or surface fluxes along with grid information.
-        grid: xgcm.Grid
-            Contains information about ocean model grid discretization, e.g. coordinates and metrics.
-        teos10 : boolean, optional
-            Use Thermodynamic Equation Of Seawater - 2010 (TEOS-10). True by default.
-        """
-
-        self.ds = ds.copy()
-        self.grid = grid
-        self.t_name = t_name
-        self.s_name = s_name
-        self.teos10 = teos10
-        self.cp = cp
-        self.rho_ref = rho_ref
-        
-    def get_density(self, density_str=None):
-        # Variables needed to calculate alpha, beta and density
-        if (
-            "alpha" not in self.ds or "beta" not in self.ds or self.teos10
-        ) and "p" not in vars(self):
-            self.ds['p'] = xr.apply_ufunc(
-                gsw.p_from_z, -self.ds.z_l, self.ds.lat, 0, 0, dask="parallelized"
-            )
-        if self.teos10 and "sa" not in self.ds:
-            self.ds['sa'] = xr.apply_ufunc(
-                gsw.SA_from_SP,
-                self.ds[self.s_name],
-                self.ds.p,
-                self.ds.lon,
-                self.ds.lat,
-                dask="parallelized",
-            )
-        if self.teos10 and "ct" not in self.ds:
-            self.ds['ct'] = xr.apply_ufunc(
-                gsw.CT_from_t, self.ds.sa, self.ds[self.t_name], self.ds.p, dask="parallelized"
-            )
-        if not self.teos10 and ("sa" not in vars(self) or "ct" not in vars(self)):
-            self.ds['sa'] = self.ds[self.s_name]
-            self.ds['ct'] = self.ds[self.t_name]
-
-        # Calculate thermal expansion coefficient alpha (1/K)
-        if "alpha" not in self.ds:
-            self.ds['alpha'] = xr.apply_ufunc(
-                gsw.alpha, self.ds.sa, self.ds.ct, self.ds.p, dask="parallelized"
-            )
-
-        # Calculate the haline contraction coefficient beta (kg/g)
-        if "beta" not in self.ds:
-            self.ds['beta'] = xr.apply_ufunc(
-                gsw.beta, self.ds.sa, self.ds.ct, self.ds.p, dask="parallelized"
-            )
-
-        # Calculate potential density (kg/m^3)
-        if density_str is None:
-            return None
-        
-        else:
-            if density_str not in self.ds:
-                if "sigma" in density_str:
-                    density = xr.apply_ufunc(
-                        getattr(gsw, density_str), self.ds.sa, self.ds.ct, dask="parallelized"
-                    )
-                else:
-                    return None
-            else:
-                return self.ds[density_str]
-
-            return density.rename(density_str)
-    
 
 class WaterMassTransformations(WaterMass):
     """
@@ -141,17 +50,43 @@ class WaterMassTransformations(WaterMass):
             Use Thermodynamic Equation Of Seawater - 2010 (TEOS-10). True by default.
         """
         super().__init__(ds, grid, t_name=t_name, s_name=s_name, teos10=teos10, cp=cp, rho_ref=rho_ref)
-        self.budgets_dict = budgets_dict
+        
+        self.budgets_dict = budgets_dict.copy()
+        for (component, cdict) in self.budgets_dict.items():
+            if 'surface_flux' in cdict:
+                self.budgets_dict[component]['surface_flux'] = {
+                    f"surface_flux_{term}":v
+                    for (term,v) in cdict['surface_flux'].items()
+                }
+                
+        # if 'mass' not in self.budgets_dict:
+        #     self.budgets_dict['mass'] = {}
+        # for (component, cdict) in self.budgets_dict.items():
+        #     for side in ['rhs', 'lhs']:
+        #         if side not in cdict:
+        #             self.budgets_dict[component][side] = {}
+        #     if 'surface_flux' not in cdict:
+        #         self.budgets_dict[component]['surface_flux'] = {}
+        #     else:
+        #         self.budgets_dict[component]['surface_flux'] = {
+        #             f"surface_flux_{term}":v
+        #             for (term,v) in cdict['surface_flux'].items()
+        #         }
+                
         
         # Set of terms for (1) heat and (2) salt fluxes
         # Use processes as default, fluxes when surface=True
         self.terms_dict = {
             "heat": self.t_name,
-            "salt": self.s_name
+            "salt": self.s_name,
         }
 
-        self.processes_heat_dict = {**self.budgets_dict['heat']['lhs'], **self.budgets_dict['heat']['rhs']}
-        self.processes_salt_dict = {**self.budgets_dict['salt']['lhs'], **self.budgets_dict['salt']['rhs']}
+        for (term, bdict) in self.budgets_dict.items():
+            setattr(self, f"processes_{term}_dict", {})
+            for ptype, _processes in bdict.items():
+                if ptype in ["lhs", "rhs", "surface_flux"]:
+                    getattr(self, f"processes_{term}_dict").update(_processes)
+
         self.lambdas_dict = {
             "heat": "temperature",
             "salt": "salinity",
@@ -206,35 +141,56 @@ class WaterMassTransformations(WaterMass):
         else:
             tend_arr = self.ds[termcode]
 
-        if term == "boundary_forcing":
-            if termcode == "boundary_forcing_heat_tendency":
-                # Need to multiply mass flux by cp to convert to energy flux (convert to W/m^2/degC)
-                flux = (
-                    expand_surface_to_3d(self.ds["wfo"], self.ds["z_i"]) * self.cp
+        n_zcoords = len([
+            c for c in self.grid.axes['Z'].coords.values()
+            if c in self.ds[termcode].dims
+        ])
+        if n_zcoords>0:
+            return {
+                "scalar": {"array": self.ds[tendcode]},
+                "tendency": {
+                    "array": tend_arr,
+                    "extensive": True,
+                    "boundary": False
+                },
+            }
+        # if no vertical coordinate in tend_arr, assume it is a surface flux
+        elif n_zcoords==0:
+            if tendency == "heat":
+                # Need to multiply mass flux by cp to convert
+                # to energy flux (in W/m^2/degC)
+                flux = expand_surface_to_3d(
+                    self.ds["wfo"]*self.cp,
+                    self.ds["z_i"]
                 )
                 scalar_in_mass = expand_surface_to_3d(
-                    self.ds["tos"], self.ds["z_i"]
+                    self.ds["tos"],
+                    self.ds["z_i"]
                 )
-            elif termcode == "boundary_forcing_salt_tendency":
-                flux = expand_surface_to_3d(self.ds["wfo"], self.ds["z_i"])
+            elif tendency == "salt":
+                flux = expand_surface_to_3d(
+                    self.ds["wfo"],
+                    self.ds["z_i"]
+                )
                 scalar_in_mass = expand_surface_to_3d(
-                    xr.zeros_like(self.ds["sos"]), self.ds["z_i"]
+                    xr.zeros_like(self.ds["sos"]),
+                    self.ds["z_i"]
                 )
             else:
                 raise ValueError(f"termcode {termcode} not yet supported.")
             return {
                 "scalar": {"array": self.ds[tendcode]},
-                "tendency": {"array": tend_arr, "extensive": True, "boundary": True},
+                "tendency": {
+                    "array":
+                    tend_arr,
+                    "extensive": True,
+                    "boundary": True
+                },
                 "boundary": {
                     "flux": flux,
                     "mass": True,
                     "scalar_in_mass": scalar_in_mass,
                 },
-            }
-        else:
-            return {
-                "scalar": {"array": self.ds[tendcode]},
-                "tendency": {"array": tend_arr, "extensive": True, "boundary": False},
             }
 
     def rho_tend(self, term):
@@ -369,7 +325,7 @@ class WaterMassTransformations(WaterMass):
             return xr.merge(wmts)
 
         hlamdot_transformed = self.transform_hlamdot(lambda_name, term, bins=bins)
-        if hlamdot_transformed is not None and len(hlamdot_transformed): # What is the point of this?
+        if hlamdot_transformed is not None and len(hlamdot_transformed):
             dA = self.grid.get_metric(hlamdot_transformed, ['X', 'Y'])
             wmt = (hlamdot_transformed * dA).sum(dA.dims)
             # rename dataarray only (not dataset)

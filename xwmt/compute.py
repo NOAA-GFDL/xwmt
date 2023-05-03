@@ -38,21 +38,28 @@ def hlamdot_from_Jlam(grid, Jlam, dim):
     return hlamdot
 
 
-def calc_hlamdotmass(grid, dd):
+def calc_hlamdotmass(grid, datadict):
     """
     Wrapper functions for boundary flux.
     """
-    hlamdotmass = dd["boundary"]["flux"]
-    if dd["boundary"][
-        "mass"
-    ]:  # If boundary flux specified as mass rather than tracer flux
+    hlamdotmass = datadict["boundary"]["flux"]
+    # If boundary flux specified as mass rather than tracer flux
+    if datadict["boundary"]["mass"]:  
         scalar_i = grid.interp(
-            dd["scalar"]["array"], "Z", boundary="extend"
+            datadict["scalar"]["array"],
+            "Z",
+            boundary="extend"
         ).chunk({grid.axes['Z'].coords['outer']: -1})
         Jlammass = Jlammass_from_Qm_lm_l(
-            hlamdotmass, dd["boundary"]["scalar_in_mass"], scalar_i
+            hlamdotmass,
+            datadict["boundary"]["scalar_in_mass"],
+            scalar_i
         )
-        hlamdotmass = hlamdot_from_Jlam(grid, Jlammass, dim="Z")
+        hlamdotmass = hlamdot_from_Jlam(
+            grid,
+            Jlammass,
+            dim="Z"
+        )
     return hlamdotmass
 
 
@@ -68,23 +75,26 @@ def hlamdot_from_Ldot_hlamdotmass(Ldot, hlamdotmass=None):
 def hlamdot_from_lamdot_h(lamdot, h):
     return h * lamdot
 
-
-def calc_hlamdot_tendency(grid, dd):
+def calc_hlamdot_tendency(grid, datadict):
     """
     Wrapper functions to determine h times lambda_dot (vertically extensive tendency)
     """
 
-    if dd["tendency"]["extensive"]:
+    if datadict["tendency"]["extensive"]:
         hlamdotmass = None
 
-        if dd["tendency"]["boundary"]:
-            hlamdotmass = calc_hlamdotmass(grid, dd)
+        if datadict["tendency"]["boundary"]:
+            hlamdotmass = calc_hlamdotmass(grid, datadict)
 
-        hlamdot = hlamdot_from_Ldot_hlamdotmass(dd["tendency"]["array"], hlamdotmass)
+        hlamdot = hlamdot_from_Ldot_hlamdotmass(
+            datadict["tendency"]["array"],
+            hlamdotmass
+        )
 
     else:
         hlamdot = hlamdot_from_lamdot_h(
-            dd["tendency"]["array"], grid.get_metric(dd["tendency"]["array"], "Z")
+            datadict["tendency"]["array"],
+            grid.get_metric(datadict["tendency"]["array"], "Z")
         )
 
     return hlamdot
@@ -93,13 +103,11 @@ def bin_define(lmin, lmax, delta_l):
     """Specify the range and widths of the lambda bins"""
     return np.arange(lmin - delta_l / 2.0, lmax + delta_l / 2.0, delta_l)
 
-
 def bin_percentile(l, percentile=[0.05, 0.95], nbins=100):
     """Specify the percentile and number of the bins"""
     l_sample = l.isel(z_l=0, time=0).chunk({"yh": -1, "xh": -1})
     vmin, vmax = l_sample.quantile(percentile, dim=l_sample.dims)
     return np.linspace(vmin, vmax, nbins)
-
 
 def expand_surface_to_3d(surfaceflux, z):
     """Expand 2D surface array to 3D array with zeros below surface"""

@@ -69,7 +69,7 @@ def idealized_transformations(extensive_tendency, lam_profile, Nz=1e3, Nlam=8):
         }
     }
 
-    wmt = xwmt.WaterMassTransformations(ds, grid, budget_dict, cp=1., rho_ref=1.)
+    wmt = xwmt.WaterMassTransformations(ds, grid, budget_dict, t_name='temperature', cp=1., rho_ref=1.)
     T = wmt.integrate_transformations("temperature", bins=bins, sum_components=False)
     T = T.assign_coords({'temperature_i': xr.DataArray(bins, dims=("temperature_i",))})
     return T
