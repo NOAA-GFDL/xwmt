@@ -19,7 +19,16 @@ class WaterMass:
     A class object with multiple methods to do full 3d watermass transformation analysis.
     """
 
-    def __init__(self, ds, grid, alpha=None, beta=None, teos10=True):
+    def __init__(
+        self,
+        ds,
+        grid,
+        t_name="thetao",
+        s_name="salt",
+        teos10=True,
+        cp=3992.0,
+        rho_ref=1035.0,
+        ):
         """
         Create a new watermass object from an input dataset.
 
@@ -27,29 +36,90 @@ class WaterMass:
         ----------
         ds : xarray.Dataset
             Contains the relevant tendencies and/or surface fluxes along with grid information.
-        alpha : float, optional
-            Specify value for the thermal expansion coefficient (in 1/K). alpha=None by default.
-            If alpha is not given (i.e., alpha=None), it is derived from salinty and temperature fields using `gsw_alpha`.
-        beta : float, optional
-            Specify value for the haline contraction coefficient (in kg/g). beta=None by default.
-            If beta is not given (i.e., beta=None), it is derived from salinty and temperature fields using `gsw_beta`.
+        grid: xgcm.Grid
+            Contains information about ocean model grid discretization, e.g. coordinates and metrics.
         teos10 : boolean, optional
             Use Thermodynamic Equation Of Seawater - 2010 (TEOS-10). True by default.
         """
 
         self.ds = ds.copy()
         self.grid = grid
-        if alpha is not None:
-            self.alpha = alpha
-        if beta is not None:
-            self.beta = beta
+        self.t_name = t_name
+        self.s_name = s_name
         self.teos10 = teos10
+        self.cp = cp
+        self.rho_ref = rho_ref
+        
+    def get_density(self, density_str=None):
+        # Variables needed to calculate alpha, beta and density
+        if (
+            "alpha" not in self.ds or "beta" not in self.ds or self.teos10
+        ) and "p" not in vars(self):
+            self.ds['p'] = xr.apply_ufunc(
+                gsw.p_from_z, -self.ds.z_l, self.ds.lat, 0, 0, dask="parallelized"
+            )
+        if self.teos10 and "sa" not in self.ds:
+            self.ds['sa'] = xr.apply_ufunc(
+                gsw.SA_from_SP,
+                self.ds[self.s_name],
+                self.ds.p,
+                self.ds.lon,
+                self.ds.lat,
+                dask="parallelized",
+            )
+        if self.teos10 and "ct" not in self.ds:
+            self.ds['ct'] = xr.apply_ufunc(
+                gsw.CT_from_t, self.ds.sa, self.ds[self.t_name], self.ds.p, dask="parallelized"
+            )
+        if not self.teos10 and ("sa" not in vars(self) or "ct" not in vars(self)):
+            self.ds['sa'] = self.ds[self.s_name]
+            self.ds['ct'] = self.ds[self.t_name]
+
+        # Calculate thermal expansion coefficient alpha (1/K)
+        if "alpha" not in self.ds:
+            self.ds['alpha'] = xr.apply_ufunc(
+                gsw.alpha, self.ds.sa, self.ds.ct, self.ds.p, dask="parallelized"
+            )
+
+        # Calculate the haline contraction coefficient beta (kg/g)
+        if "beta" not in self.ds:
+            self.ds['beta'] = xr.apply_ufunc(
+                gsw.beta, self.ds.sa, self.ds.ct, self.ds.p, dask="parallelized"
+            )
+
+        # Calculate potential density (kg/m^3)
+        if density_str is None:
+            return None
+        
+        else:
+            if density_str not in self.ds:
+                if "sigma" in density_str:
+                    density = xr.apply_ufunc(
+                        getattr(gsw, density_str), self.ds.sa, self.ds.ct, dask="parallelized"
+                    )
+                else:
+                    return None
+            else:
+                return self.ds[density_str]
+
+            return density.rename(density_str)
+    
 
 class WaterMassTransformations(WaterMass):
     """
     A class
     """
-    def __init__(self, ds, grid, budgets_dict, cp=3992.0, rho_ref=1035.0, alpha=None, beta=None, teos10=True):
+    def __init__(
+        self,
+        ds,
+        grid,
+        budgets_dict,
+        t_name="thetao",
+        s_name="salt",
+        teos10=True,
+        cp=3992.0,
+        rho_ref=1035.0,
+        ):
         """
         Create a new watermass transformation object from an input dataset.
 
@@ -70,16 +140,14 @@ class WaterMassTransformations(WaterMass):
         teos10 : boolean, optional
             Use Thermodynamic Equation Of Seawater - 2010 (TEOS-10). True by default.
         """
-        super().__init__(ds, grid, alpha=alpha, beta=beta, teos10=teos10)
+        super().__init__(ds, grid, t_name=t_name, s_name=s_name, teos10=teos10, cp=cp, rho_ref=rho_ref)
         self.budgets_dict = budgets_dict
-        self.cp = cp
-        self.rho_ref = rho_ref
         
         # Set of terms for (1) heat and (2) salt fluxes
         # Use processes as default, fluxes when surface=True
         self.terms_dict = {
-            "heat": self.budgets_dict['heat']['lambda'],
-            "salt": self.budgets_dict['salt']['lambda']
+            "heat": self.t_name,
+            "salt": self.s_name
         }
 
         self.processes_heat_dict = {**self.budgets_dict['heat']['lhs'], **self.budgets_dict['heat']['rhs']}
@@ -169,88 +237,13 @@ class WaterMassTransformations(WaterMass):
                 "tendency": {"array": tend_arr, "extensive": True, "boundary": False},
             }
 
-    def get_density(self, density_str=None):
-
-        # Variables needed to calculate alpha, beta and density
-        if (
-            "alpha" not in vars(self) or "beta" not in vars(self) or self.teos10
-        ) and "p" not in vars(self):
-            self.p = xr.apply_ufunc(
-                gsw.p_from_z, -self.ds["z_l"], self.ds["lat"], 0, 0, dask="parallelized"
-            )
-        if self.teos10 and "sa" not in vars(self):
-            self.sa = xr.apply_ufunc(
-                gsw.SA_from_SP,
-                self.ds[self.terms_dict['salt']],
-                self.p,
-                self.ds["lon"],
-                self.ds["lat"],
-                dask="parallelized",
-            )
-        if self.teos10 and "ct" not in vars(self):
-            self.ct = xr.apply_ufunc(
-                gsw.CT_from_t, self.sa, self.ds[self.terms_dict['heat']], self.p, dask="parallelized"
-            )
-        if not self.teos10 and ("sa" not in vars(self) or "ct" not in vars(self)):
-            self.sa = self.ds[self.terms_dict['salt']]
-            self.ct = self.ds[self.terms_dict['heat']]
-
-        # Calculate thermal expansion coefficient alpha (1/K)
-        if "alpha" not in vars(self):
-            if "alpha" in self.ds:
-                self.alpha = self.ds.alpha
-            else:
-                self.alpha = xr.apply_ufunc(
-                    gsw.alpha, self.sa, self.ct, self.p, dask="parallelized"
-                )
-
-        # Calculate the haline contraction coefficient beta (kg/g)
-        if "beta" not in vars(self):
-            if "beta" in self.ds:
-                self.beta = self.ds.beta
-            else:
-                self.beta = xr.apply_ufunc(
-                    gsw.beta, self.sa, self.ct, self.p, dask="parallelized"
-                )
-
-        # Calculate potential density (kg/m^3)
-        if density_str not in self.ds:
-            if density_str == "sigma0":
-                density = xr.apply_ufunc(
-                    gsw.sigma0, self.sa, self.ct, dask="parallelized"
-                )
-            elif density_str == "sigma1":
-                density = xr.apply_ufunc(
-                    gsw.sigma1, self.sa, self.ct, dask="parallelized"
-                )
-            elif density_str == "sigma2":
-                density = xr.apply_ufunc(
-                    gsw.sigma2, self.sa, self.ct, dask="parallelized"
-                )
-            elif density_str == "sigma3":
-                density = xr.apply_ufunc(
-                    gsw.sigma3, self.sa, self.ct, dask="parallelized"
-                )
-            elif density_str == "sigma4":
-                density = xr.apply_ufunc(
-                    gsw.sigma4, self.sa, self.ct, dask="parallelized"
-                )
-            else:
-                return self.alpha, self.beta, None
-        else:
-            return self.alpha, self.beta, self.ds[density_str]
-
-        return self.alpha, self.beta, density.rename(density_str)
-
     def rho_tend(self, term):
         """
         Calculate the tendency of the locally-referenced potential density.
         """
 
-        if "alpha" in vars(self) and "beta" in vars(self):
-            alpha, beta = self.alpha, self.beta
-        else:
-            (alpha, beta, _) = self.get_density()
+        if "alpha" not in self.ds or "beta" not in self.ds:
+            self.get_density()
 
         # Either heat or salt tendency/flux may not be used
         rho_tend_heat, rho_tend_salt = None, None
@@ -259,13 +252,13 @@ class WaterMassTransformations(WaterMass):
         if datadict is not None:
             heat_tend = calc_hlamdot_tendency(self.grid, self.datadict("heat", term))
             # Density tendency due to heat flux (kg/s/m^2)
-            rho_tend_heat = -(alpha / self.cp) * heat_tend
+            rho_tend_heat = -(self.ds.alpha / self.cp) * heat_tend
 
         datadict = self.datadict("salt", term)
         if datadict is not None:
             salt_tend = calc_hlamdot_tendency(self.grid, self.datadict("salt", term))
             # Density tendency due to salt/salinity (kg/s/m^2)
-            rho_tend_salt = beta * salt_tend
+            rho_tend_salt = self.ds.beta * salt_tend
 
         return rho_tend_heat, rho_tend_salt
 
@@ -301,13 +294,14 @@ class WaterMassTransformations(WaterMass):
             hlamdot = {}
             for idx, tend in enumerate(self.terms_dict.keys()):
                 hlamdot[tend] = rhos[idx]
-            lam = self.get_density(lambda_name)[2]
+            lam = self.get_density(lambda_name)
         
         else:
             raise ValueError(f"{lambda_name} is not a supported lambda.")
         
         try:
             return hlamdot, lam
+        
         except NameError:
             return None, None
 
@@ -321,9 +315,7 @@ class WaterMassTransformations(WaterMass):
             return
 
         if bins is None:
-            bins = bin_percentile(
-                lam
-            )  # automatically find the right range based on the distribution in l
+            bins = bin_percentile(lam)
 
         # Interpolate lambda to the cell interfaces
         lam_i = (
