@@ -5,11 +5,8 @@ import warnings
 
 from xwmt.wm import WaterMass
 from xwmt.compute import (
-    Jlammass_from_Qm_lm_l,
     calc_hlamdot_tendency,
     expand_surface_to_3d,
-    hlamdot_from_Jlam,
-    hlamdot_from_Ldot_hlamdotmass,
     bin_define,
     bin_percentile,
 )
@@ -51,6 +48,11 @@ class WaterMassTransformations(WaterMass):
         """
         super().__init__(ds, grid, t_name=t_name, s_name=s_name, teos10=teos10, cp=cp, rho_ref=rho_ref)
         
+        self.terms_dict = {
+            "heat": self.t_name,
+            "salt": self.s_name,
+        }
+        
         self.budgets_dict = budgets_dict.copy()
         for (component, cdict) in self.budgets_dict.items():
             if 'surface_flux' in cdict:
@@ -58,28 +60,6 @@ class WaterMassTransformations(WaterMass):
                     f"surface_flux_{term}":v
                     for (term,v) in cdict['surface_flux'].items()
                 }
-                
-        # if 'mass' not in self.budgets_dict:
-        #     self.budgets_dict['mass'] = {}
-        # for (component, cdict) in self.budgets_dict.items():
-        #     for side in ['rhs', 'lhs']:
-        #         if side not in cdict:
-        #             self.budgets_dict[component][side] = {}
-        #     if 'surface_flux' not in cdict:
-        #         self.budgets_dict[component]['surface_flux'] = {}
-        #     else:
-        #         self.budgets_dict[component]['surface_flux'] = {
-        #             f"surface_flux_{term}":v
-        #             for (term,v) in cdict['surface_flux'].items()
-        #         }
-                
-        
-        # Set of terms for (1) heat and (2) salt fluxes
-        # Use processes as default, fluxes when surface=True
-        self.terms_dict = {
-            "heat": self.t_name,
-            "salt": self.s_name,
-        }
 
         for (term, bdict) in self.budgets_dict.items():
             setattr(self, f"processes_{term}_dict", {})
@@ -159,8 +139,8 @@ class WaterMassTransformations(WaterMass):
             if tendency == "heat":
                 # Need to multiply mass flux by cp to convert
                 # to energy flux (in W/m^2/degC)
-                flux = expand_surface_to_3d(
-                    self.ds["wfo"]*self.cp,
+                mass_flux = expand_surface_to_3d(
+                    self.ds["wfo"] * self.cp,
                     self.ds["z_i"]
                 )
                 scalar_in_mass = expand_surface_to_3d(
@@ -168,7 +148,7 @@ class WaterMassTransformations(WaterMass):
                     self.ds["z_i"]
                 )
             elif tendency == "salt":
-                flux = expand_surface_to_3d(
+                mass_flux = expand_surface_to_3d(
                     self.ds["wfo"],
                     self.ds["z_i"]
                 )
@@ -178,16 +158,19 @@ class WaterMassTransformations(WaterMass):
                 )
             else:
                 raise ValueError(f"termcode {termcode} not yet supported.")
+            flux_arr = expand_surface_to_3d(
+                tend_arr,
+                self.ds["z_i"]
+            )
             return {
                 "scalar": {"array": self.ds[tendcode]},
                 "tendency": {
-                    "array":
-                    tend_arr,
+                    "array": flux_arr,
                     "extensive": True,
                     "boundary": True
                 },
                 "boundary": {
-                    "flux": flux,
+                    "flux": mass_flux,
                     "mass": True,
                     "scalar_in_mass": scalar_in_mass,
                 },

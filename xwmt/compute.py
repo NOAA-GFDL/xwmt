@@ -13,18 +13,18 @@ def zonal_mean(da, metrics):
 
 
 ## Functions to obtain hlamdot
-def Jlammass_from_Qm_lm_l(Qm, lm, l):
+def Jlammass_from_Qm_lamf_lam(Qm, lamf, lam):
     """
     Input
     -----
     Qm : xarray.DataArray
         massflux (e.g., wfo)
-    lm : xarray.DataArray
+    lamf : xarray.DataArray
         Scalar value of mass flux (e.g., tos, 0)
-    l : xarray.DataArray
+    lam : xarray.DataArray
         Scalar field of ocean value (e.g., thetao, so)
     """
-    return Qm * (lm - l)
+    return Qm * (lamf - lam)
 
 
 def hlamdot_from_Jlam(grid, Jlam, dim):
@@ -50,7 +50,7 @@ def calc_hlamdotmass(grid, datadict):
             "Z",
             boundary="extend"
         ).chunk({grid.axes['Z'].coords['outer']: -1})
-        Jlammass = Jlammass_from_Qm_lm_l(
+        Jlammass = Jlammass_from_Qm_lamf_lam(
             hlamdotmass,
             datadict["boundary"]["scalar_in_mass"],
             scalar_i
@@ -62,7 +62,6 @@ def calc_hlamdotmass(grid, datadict):
         )
     return hlamdotmass
 
-
 def hlamdot_from_Ldot_hlamdotmass(Ldot, hlamdotmass=None):
     """
     Advective surface flux
@@ -70,7 +69,6 @@ def hlamdot_from_Ldot_hlamdotmass(Ldot, hlamdotmass=None):
     if hlamdotmass is not None:
         return Ldot + hlamdotmass.fillna(0)
     return Ldot
-
 
 def hlamdot_from_lamdot_h(lamdot, h):
     return h * lamdot
@@ -85,11 +83,19 @@ def calc_hlamdot_tendency(grid, datadict):
 
         if datadict["tendency"]["boundary"]:
             hlamdotmass = calc_hlamdotmass(grid, datadict)
-
-        hlamdot = hlamdot_from_Ldot_hlamdotmass(
-            datadict["tendency"]["array"],
-            hlamdotmass
-        )
+            hlamdot = hlamdot_from_Ldot_hlamdotmass(
+                hlamdot_from_Jlam(
+                    grid,
+                    datadict["tendency"]["array"],
+                    dim="Z"
+                ),
+                hlamdotmass
+            )
+        else:
+            hlamdot = hlamdot_from_Ldot_hlamdotmass(
+                datadict["tendency"]["array"],
+                hlamdotmass
+            )
 
     else:
         hlamdot = hlamdot_from_lamdot_h(
