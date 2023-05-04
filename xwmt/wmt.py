@@ -418,14 +418,14 @@ class WaterMassTransformations(WaterMass):
         if term is None:
             _local_transformations = []
             for term in self.processes(False):
-                _local_transformation = self.transform_hlamdot(lambda_name, term, sum_components=False, group_processes=False, **kwargs)
+                _local_transformation = self.map_transformations(lambda_name, term, sum_components=False, group_processes=False, **kwargs)
                 if _local_transformation is not None:
                     _local_transformations.append(_local_transformation)
             local_transformations = xr.merge(_local_transformations)
         else:
             # If term is given
             local_transformations = self.transform_hlamdot(lambda_name, term, **kwargs)
-            if isinstance(local_transformation, xr.DataArray):
+            if isinstance(local_transformations, xr.DataArray):
                 local_transformations = local_transformations.to_dataset()
 
         if group_processes:
@@ -455,7 +455,7 @@ class WaterMassTransformations(WaterMass):
 
         Returns
         -------
-        G : xarray.Dataset
+        transformations : xarray.Dataset
             Dataset containing components of water mass transformations, possibly grouped as
             specified by the arguments.
         """
