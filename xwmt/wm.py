@@ -40,16 +40,6 @@ class WaterMass:
         rho_ref: float
             Value of reference potential density. Note: WaterMass is assumed to be Boussinesq.
         """
-
-        if t_name not in ds:
-            raise ValueError(f"ds must include temperature variable\
-            defined by kwarg t_name (default: {t_name}).")
-        if s_name not in ds:
-            raise ValueError(f"ds must include salinity variable\
-            defined by kwarg t_name (default: {s_name}).")
-        if h_name not in ds:
-            raise ValueError(f"ds must include thickness variable\
-            defined by kwarg t_name (default: {h_name}).")
         
         self.ds = ds.copy()
         self.grid = grid
@@ -60,29 +50,30 @@ class WaterMass:
         self.cp = cp
         self.rho_ref = rho_ref
         
-        # Conservatively interpolate thickness to cell interfaces, needed to
-        # estimate depth of layer centers and compute surface flux divergences
-        Z_center_extended = np.concatenate((
-            self.ds[self.grid.axes['Z'].coords['outer']][np.array([0])].values,
-            self.ds[self.grid.axes['Z'].coords['center']].values,
-            self.ds[self.grid.axes['Z'].coords['outer']][np.array([-1])].values
-        ))
-        with warnings.catch_warnings():
-            warnings.simplefilter(action='ignore', category=FutureWarning)
-            self.ds[f'{h_name}_i'] = self.grid.transform(
-                self.ds[h_name].fillna(0.),
-                "Z",
-                Z_center_extended,
-                method="conservative"
-            ).assign_coords({
-                self.grid.axes['Z'].coords['outer']:
-                self.ds[self.grid.axes['Z'].coords['outer']].values
-            })
-        setattr(self.grid, "Z_metrics", {
-                "center": self.ds[h_name],
-                "outer": self.ds[f'{h_name}_i']
-            }
-        )
+        if self.h_name in self.ds:
+            # Conservatively interpolate thickness to cell interfaces, needed to
+            # estimate depth of layer centers and compute surface flux divergences
+            Z_center_extended = np.concatenate((
+                self.ds[self.grid.axes['Z'].coords['outer']][np.array([0])].values,
+                self.ds[self.grid.axes['Z'].coords['center']].values,
+                self.ds[self.grid.axes['Z'].coords['outer']][np.array([-1])].values
+            ))
+            with warnings.catch_warnings():
+                warnings.simplefilter(action='ignore', category=FutureWarning)
+                self.ds[f'{h_name}_i'] = self.grid.transform(
+                    self.ds[h_name].fillna(0.),
+                    "Z",
+                    Z_center_extended,
+                    method="conservative"
+                ).assign_coords({
+                    self.grid.axes['Z'].coords['outer']:
+                    self.ds[self.grid.axes['Z'].coords['outer']].values
+                })
+            setattr(self.grid, "Z_metrics", {
+                    "center": self.ds[h_name],
+                    "outer": self.ds[f'{h_name}_i']
+                }
+            )
         
     def get_density(self, density_name=None):
         """
@@ -97,6 +88,17 @@ class WaterMass:
             "sigma1", "sigma2", "sigma3", "sigma4" (corresponding to functions
             of the same name in the `gsw` package).
         """
+        
+        if self.t_name not in self.ds:
+            raise ValueError(f"ds must include temperature variable\
+            defined by kwarg t_name (default: {self.t_name}).")
+        if self.s_name not in self.ds:
+            raise ValueError(f"ds must include salinity variable\
+            defined by kwarg t_name (default: {self.s_name}).")
+        if self.h_name not in self.ds:
+            raise ValueError(f"ds must include thickness variable\
+            defined by kwarg t_name (default: {self.h_name}).")
+        
         if (
             "alpha" not in self.ds or "beta" not in self.ds or self.teos10
         ) and "p" not in vars(self):
@@ -163,6 +165,10 @@ class WaterMass:
         incrop: bool
             Default: False. If True, returns the seafloor incrop level instead. 
         """
+        if self.h_name not in self.ds:
+            raise ValueError(f"ds must include thickness variable\
+            defined by kwarg t_name (default: {self.h_name}).")
+        
         z_coord = self.grid.axes['Z'].coords[position]
         dk = int(2*incrop - 1)
         h = self.grid.Z_metrics[position]
@@ -187,6 +193,9 @@ class WaterMass:
         **kwargs:
             Passed to the `xr.DataArray.sel` method on the vertical thickness.
         """
+        if self.h_name not in self.ds:
+            raise ValueError(f"ds must include thickness variable\
+            defined by kwarg t_name (default: {self.h_name}).")
 
         z_coord = self.grid.axes['Z'].coords[position]
         dk = int(2*incrop - 1)

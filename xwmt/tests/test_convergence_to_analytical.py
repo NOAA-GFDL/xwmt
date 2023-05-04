@@ -46,7 +46,6 @@ def idealized_transformations(extensive_tendency, lam_profile, Nz=1e3, Nlam=8):
     ds = ds.assign_coords({'rA': xr.DataArray([[1.]], dims=('x','y',))})
 
     metrics = {
-        ('Z',): ['dz'], # Z distances
         ('X', 'Y'): ['rA'] # Areas
     }
     coords = {
