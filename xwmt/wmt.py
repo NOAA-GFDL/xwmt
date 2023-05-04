@@ -1,3 +1,4 @@
+import copy
 import numpy as np
 import xarray as xr
 import gsw
@@ -6,9 +7,7 @@ import warnings
 from xwmt.wm import WaterMass
 from xwmt.compute import (
     calc_hlamdot_tendency,
-    expand_surface_to_3d,
     bin_define,
-    bin_percentile,
 )
 
 class WaterMassTransformations(WaterMass):
@@ -22,38 +21,54 @@ class WaterMassTransformations(WaterMass):
         budgets_dict,
         t_name="thetao",
         s_name="salt",
+        h_name="thkcello",
         teos10=True,
         cp=3992.0,
         rho_ref=1035.0,
         ):
         """
-        Create a new watermass transformation object from an input dataset.
+        Create a new watermass object from an input dataset.
 
         Parameters
         ----------
         ds : xarray.Dataset
             Contains the relevant tendencies and/or surface fluxes along with grid information.
-        cp : float, optional
-            Specify value for the specific heat capacity (in J/kg/K). cp=3992.0 by default.
-        rho_ref : float, optional
-            Specify value for the reference seawater density (in kg/m^3). rho_ref=1035.0 by default.
-        alpha : float, optional
-            Specify value for the thermal expansion coefficient (in 1/K). alpha=None by default.
-            If alpha is not given (i.e., alpha=None), it is derived from salinty and temperature fields using `gsw_alpha`.
-        beta : float, optional
-            Specify value for the haline contraction coefficient (in kg/g). beta=None by default.
-            If beta is not given (i.e., beta=None), it is derived from salinty and temperature fields using `gsw_beta`.
+        grid: xgcm.Grid
+            Contains information about ocean model grid discretization, e.g. coordinates and metrics.
+        budgets_dict: dict
+            Nested dictionary containing information about groupings of tendency variable names.
+            See `xwmt/conventions` for examples of how this dictionary should be structued.
+        t_name: str
+            Name of potential temperature variable [in degrees Celsius] in ds.
+        s_name: str
+            Name of practical salinity variable [in psu] in ds.
+        h_name: str
+            Name of thickness variable [in m] in ds.
         teos10 : boolean, optional
             Use Thermodynamic Equation Of Seawater - 2010 (TEOS-10). True by default.
+        cp: float
+            Value of specific heat capacity.
+        rho_ref: float
+            Value of reference potential density. Note: WaterMass is assumed to be Boussinesq.
         """
-        super().__init__(ds, grid, t_name=t_name, s_name=s_name, teos10=teos10, cp=cp, rho_ref=rho_ref)
+
+        super().__init__(
+            ds,
+            grid,
+            t_name=t_name,
+            s_name=s_name,
+            h_name=h_name,
+            teos10=teos10,
+            cp=cp,
+            rho_ref=rho_ref
+        )
         
         self.terms_dict = {
             "heat": self.t_name,
             "salt": self.s_name,
         }
         
-        self.budgets_dict = budgets_dict.copy()
+        self.budgets_dict = copy.deepcopy(budgets_dict)
         for (component, cdict) in self.budgets_dict.items():
             if 'surface_flux' in cdict:
                 self.budgets_dict[component]['surface_flux'] = {
@@ -139,33 +154,27 @@ class WaterMassTransformations(WaterMass):
             if tendency == "heat":
                 # Need to multiply mass flux by cp to convert
                 # to energy flux (in W/m^2/degC)
-                mass_flux = expand_surface_to_3d(
+                mass_flux = self.expand_surface_array_vertically(
                     self.ds["wfo"] * self.cp,
-                    self.ds["z_i"]
                 )
-                scalar_in_mass = expand_surface_to_3d(
+                scalar_in_mass = self.expand_surface_array_vertically(
                     self.ds["tos"],
-                    self.ds["z_i"]
                 )
             elif tendency == "salt":
-                mass_flux = expand_surface_to_3d(
+                mass_flux = self.expand_surface_array_vertically(
                     self.ds["wfo"],
-                    self.ds["z_i"]
                 )
-                scalar_in_mass = expand_surface_to_3d(
+                scalar_in_mass = self.expand_surface_array_vertically(
                     xr.zeros_like(self.ds["sos"]),
-                    self.ds["z_i"]
                 )
             else:
                 raise ValueError(f"termcode {termcode} not yet supported.")
-            flux_arr = expand_surface_to_3d(
-                tend_arr,
-                self.ds["z_i"]
-            )
             return {
                 "scalar": {"array": self.ds[tendcode]},
                 "tendency": {
-                    "array": flux_arr,
+                    "array": self.expand_surface_array_vertically(
+                        tend_arr
+                    ),
                     "extensive": True,
                     "boundary": True
                 },
@@ -210,14 +219,16 @@ class WaterMassTransformations(WaterMass):
             Specifies process term
         """
 
-        # Get layer-integrated potential temperature tendency from tendency of heat (in W/m^2), lambda = temperature
+        # Get layer-integrated potential temperature tendency
+        # from tendency of heat (in W/m^2), lambda = temperature
         if lambda_name == "temperature":
             datadict = self.datadict("heat", term)
             if datadict is not None:
                 hlamdot = calc_hlamdot_tendency(self.grid, datadict) / (self.rho_ref * self.cp)
                 lam = datadict["scalar"]["array"]
 
-        # Get layer-integrated salinity tendency tendency from tendency of salt (in g/s/m^2), lambda = salt
+        # Get layer-integrated salinity tendency
+        # from tendency of salt (in g/s/m^2), lambda = salinity
         elif lambda_name == "salinity":
             datadict = self.datadict("salt", term)
             if datadict is not None:
@@ -225,8 +236,9 @@ class WaterMassTransformations(WaterMass):
                 # TODO: Accurately define salinity field (What does this mean? - HFD)
                 lam = datadict["scalar"]["array"]
 
-        # Get layer-integrated potential density tendencies (in kg/s/m^2) from heat and salt, lambda = density
-        # Here we want to output 2 transformation rates:
+        # Get layer-integrated potential density tendencies (in kg/s/m^2)
+        # from heat and salt, lambda = density
+        # Here we want to output 2 separate components of the transformation rates:
         # (1) transformation due to heat tend, (2) transformation due to salt tend
         elif lambda_name in self.lambdas("density"):
             rhos = self.rho_tend(term)
@@ -246,7 +258,8 @@ class WaterMassTransformations(WaterMass):
 
     def transform_hlamdot(self, lambda_name, term, bins=None):
         """
-        Transform to lambda space
+        Compute extensive tendencies and transform them into lambda space
+        along the vertical ("Z") dimension.
         """
 
         hlamdot, lam = self.calc_hlamdot_and_lambda(lambda_name, term)
@@ -254,7 +267,7 @@ class WaterMassTransformations(WaterMass):
             return
 
         if bins is None:
-            bins = bin_percentile(lam)
+            bins = self.bin_percentile(lam, surface=True)
 
         # Interpolate lambda to the cell interfaces
         lam_i = (
@@ -295,7 +308,9 @@ class WaterMassTransformations(WaterMass):
 
     def transform_hlamdot_and_integrate(self, lambda_name, term=None, bins=None):
         """
-        Water mass transformation (G)
+        Compute extensive tendencies, transform them into lambda space
+        along the vertical ("Z") dimension, and integrate along the
+        horizontal dimensions ("X", "Y").
         """
 
         # If term is not given, use all available process terms
@@ -396,7 +411,8 @@ class WaterMassTransformations(WaterMass):
 
     def map_transformations(self, lambda_name, term=None, sum_components=True, group_processes=False, **kwargs):
         """
-        Wrapper function for transform_hlamdot() to group terms based on tendency terms (heat, salt) and processes.
+        Wrapper function for transform_hlamdot() to group terms based
+        on tendency terms (heat, salt) and processes.
         """
         # If term is not given, use all available process terms
         if term is None:
@@ -424,7 +440,7 @@ class WaterMassTransformations(WaterMass):
 
     def integrate_transformations(self, lambda_name, *args, **kwargs):
         """
-        Water mass transformation (G)
+        Computed horizontally-integrated water mass transformations.
 
         Parameters
         ----------
@@ -442,9 +458,9 @@ class WaterMassTransformations(WaterMass):
 
         Returns
         -------
-        G : {xarray.DataArray, xarray.Dataset}
-            The water mass transformation along lamba for each time. G is xarray.DataArray when term is specified and sum_components=True.
-            G is xarray.DataSet when multiple terms are included (term=None) or sum_components=False.
+        G : xarray.Dataset
+            Dataset containing components of water mass transformations, possibly grouped as
+            specified by the arguments.
         """
 
         # Extract default function args

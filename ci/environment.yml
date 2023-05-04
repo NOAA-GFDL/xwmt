@@ -11,8 +11,7 @@ dependencies:
   - pandas
   - pip
   - pylint
-  - python==3.9
+  - python==3.10
   - pytest
   - xarray
-  - xgcm==0.5.2
-  - xhistogram==0.3.1
+  - xgcm==0.8.1
