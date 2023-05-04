@@ -37,7 +37,6 @@ def hlamdot_from_Jlam(grid, Jlam, dim):
     hlamdot = lamdot * grid.get_metric(lamdot, "Z")
     return hlamdot
 
-
 def calc_hlamdotmass(grid, datadict):
     """
     Wrapper functions for boundary flux.
@@ -102,7 +101,6 @@ def calc_hlamdot_tendency(grid, datadict):
             datadict["tendency"]["array"],
             grid.get_metric(datadict["tendency"]["array"], "Z")
         )
-
     return hlamdot
 
 def bin_define(lmin, lmax, delta_l):

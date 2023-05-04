@@ -33,6 +33,7 @@ class WaterMass:
         self.grid = grid
         self.t_name = t_name
         self.s_name = s_name
+        self.thk_name = grid.get_metric(self.ds[t_name], "Z").name
         self.teos10 = teos10
         self.cp = cp
         self.rho_ref = rho_ref
@@ -90,3 +91,21 @@ class WaterMass:
                 return self.ds[density_str]
 
             return density.rename(density_str)
+        
+    def get_outcrop_lev(self, incrop=False):
+        z_coord = self.grid.axes['Z'].coords['center']
+        dk = int(2*incrop - 1)
+        cumthk = self.ds[self.thk_name].sel(
+                {z_coord: self.ds[z_coord][::dk]}
+            ).cumsum(z_coord)
+        return cumthk.idxmax(z_coord).where(cumthk.isel({z_coord:-1})!=0.)
+
+    def sel_outcrop_lev(self, da, incrop=False):
+        z_coord = self.grid.axes['Z'].coords['center']
+        dk = int(2*incrop - 1)
+        cumthk = self.ds[self.thk_name].sel(
+                {z_coord: self.ds[z_coord][::dk]}
+            ).cumsum(z_coord)
+        return da.sel(
+            {z_coord: cumthk.idxmax(z_coord)}
+        ).where(cumthk.isel({z_coord:-1})!=0.)
