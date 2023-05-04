@@ -416,27 +416,24 @@ class WaterMassTransformations(WaterMass):
         """
         # If term is not given, use all available process terms
         if term is None:
-            Fs = []
+            _local_transformations = []
             for term in self.processes(False):
-                _F = self.F(lambda_name, term, sum_components=False, group_processes=False, **kwargs)
-                if _F is not None:
-                    Fs.append(_F)
-            F = xr.merge(Fs)
+                _local_transformation = self.transform_hlamdot(lambda_name, term, sum_components=False, group_processes=False, **kwargs)
+                if _local_transformation is not None:
+                    _local_transformations.append(_local_transformation)
+            local_transformations = xr.merge(_local_transformations)
         else:
             # If term is given
-            F = self.transform_hlamdot(lambda_name, term, **kwargs)
-            if isinstance(F, xr.DataArray):
-                F = F.to_dataset()
+            local_transformations = self.transform_hlamdot(lambda_name, term, **kwargs)
+            if isinstance(local_transformation, xr.DataArray):
+                local_transformations = local_transformations.to_dataset()
 
         if group_processes:
-            F = self._group_processes(F)
+            local_transformations = self._group_processes(local_transformations)
         if sum_components:
-            F = self._sum_components(F, group_processes=group_processes)
+            local_transformations = self._sum_components(local_transformations, group_processes=group_processes)
 
-        if isinstance(F, xr.Dataset) and len(F) == 1:
-            return F[list(F.data_vars)[0]]
-        else:
-            return F
+        return local_transformations
 
     def integrate_transformations(self, lambda_name, *args, **kwargs):
         """
@@ -467,15 +464,15 @@ class WaterMassTransformations(WaterMass):
         group_processes = kwargs.pop("group_processes", False)
         sum_components = kwargs.pop("sum_components", True)
         # call the base function
-        G = self.transform_hlamdot_and_integrate(lambda_name, *args, **kwargs)
+        transformations = self.transform_hlamdot_and_integrate(lambda_name, *args, **kwargs)
 
         # process this function arguments
         if group_processes:
-            G = self._group_processes(G)
+            transformations = self._group_processes(transformations)
         if sum_components:
-            G = self._sum_components(G, group_processes=group_processes)
+            transformations = self._sum_components(transformations, group_processes=group_processes)
 
-        return G
+        return transformations
 
     def isosurface_mean(self, *args, ti=None, tf=None, dl=0.1, **kwargs):
         """
@@ -502,9 +499,9 @@ class WaterMassTransformations(WaterMass):
 
         Returns
         -------
-        F_mean : {xarray.DataArray, xarray.Dataset}
-            Spatial field of mean transformation at a given (set of) lambda value(s). F_mean is xarray.DataArray when term is specified and sum_components=True.
-            F_mean is xarray.DataSet when multiple terms are included (term=None) or sum_components=False.
+        local_transformations_mean : {xarray.DataArray, xarray.Dataset}
+            Spatial field of mean transformation at a given (set of) lambda value(s).
+            local_transformations_mean is xarray.DataSet when multiple terms are included (term=None) or sum_components=False.
         """
 
         if len(args) == 3:
@@ -532,16 +529,16 @@ class WaterMassTransformations(WaterMass):
         kwargs["bins"] = bin_define(np.min(val) - dl, np.max(val) + dl, dl)
 
         # Calculate spatiotemporal field of transformation
-        F = self.F(lambda_name, term, **kwargs)
+        local_transformations = self.map_transformations(lambda_name, term, **kwargs)
         # TODO: Preferred method should be ndays_standard if calendar type is 'noleap'. Thus, avoiding to load the full time array
         if (
             "calendar_type" in self.ds.time.attrs
             and self.ds.time.attrs["calendar_type"].lower() == "noleap"
         ):
             # Number of days in each month
-            n_years = len(np.unique(F.time.dt.year))
+            n_years = len(np.unique(local_transformations.time.dt.year))
             # Monthly data
-            dm = np.diff(F.indexes["time"].month)
+            dm = np.diff(local_transformations.indexes["time"].month)
             udm = np.unique([m + 12 if m == -11 else m for m in dm])
             if np.array_equal(udm, [1]):
                 ndays_standard = np.array(
@@ -549,13 +546,13 @@ class WaterMassTransformations(WaterMass):
                 )
                 assert np.sum(ndays_standard) == 365
                 dt = xr.DataArray(
-                    ndays_standard[F.time.dt.month.values - 1],
+                    ndays_standard[local_transformations.time.dt.month.values - 1],
                     coords=[self.ds.time],
                     dims=["time"],
                     name="days per month",
                 )
             # Annual data
-            dy = np.diff(F.indexes["time"].year)
+            dy = np.diff(local_transformations.indexes["time"].year)
             udy = np.unique(dy)
             if np.array_equal(udy, [1]):
                 dt = xr.DataArray(
@@ -586,8 +583,8 @@ class WaterMassTransformations(WaterMass):
 
         # Convert to dask array for lazy calculations
         dt = dt.chunk(1)
-        F_mean = (
-            F.sel({tendcode: val}, method="nearest").sel(time=slice(ti, tf))
+        local_transformations_mean = (
+            local_transformations.sel({tendcode: val}, method="nearest").sel(time=slice(ti, tf))
             * dt.sel(time=slice(ti, tf))
         ).sum("time") / dt.sel(time=slice(ti, tf)).sum("time")
-        return F_mean
+        return local_transformations_mean
