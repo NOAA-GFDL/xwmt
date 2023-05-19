@@ -12,16 +12,12 @@ from xwmt.compute import (
 
 class WaterMassTransformations(WaterMass):
     """
-    A class
+    A class object with multiple methods to do full 3d watermass transformation analysis.
     """
     def __init__(
         self,
-        ds,
         grid,
         budgets_dict,
-        t_name="thetao",
-        s_name="salt",
-        h_name="thkcello",
         teos10=True,
         cp=3992.0,
         rho_ref=1035.0,
@@ -31,19 +27,11 @@ class WaterMassTransformations(WaterMass):
 
         Parameters
         ----------
-        ds : xarray.Dataset
-            Contains the relevant tendencies and/or surface fluxes along with grid information.
         grid: xgcm.Grid
-            Contains information about ocean model grid discretization, e.g. coordinates and metrics.
+            Contains information about ocean model grid coordinates, metrics, and data variables.
         budgets_dict: dict
-            Nested dictionary containing information about groupings of tendency variable names.
-            See `xwmt/conventions` for examples of how this dictionary should be structued.
-        t_name: str
-            Name of potential temperature variable [in degrees Celsius] in ds.
-        s_name: str
-            Name of practical salinity variable [in psu] in ds.
-        h_name: str
-            Name of thickness variable [in m] in ds.
+            Nested dictionary containing information about lambda and tendency variable names.
+            See `xwmt/conventions` for examples of how this dictionary should be structured.
         teos10 : boolean, optional
             Use Thermodynamic Equation Of Seawater - 2010 (TEOS-10). True by default.
         cp: float
@@ -51,19 +39,18 @@ class WaterMassTransformations(WaterMass):
         rho_ref: float
             Value of reference potential density. Note: WaterMass is assumed to be Boussinesq.
         """
-
+        
         super().__init__(
-            ds,
             grid,
-            t_name=t_name,
-            s_name=s_name,
-            h_name=h_name,
+            t_name=budgets_dict["heat"]["lambda"],
+            s_name=budgets_dict["salt"]["lambda"],
+            h_name=budgets_dict["mass"]["thickness"],
             teos10=teos10,
             cp=cp,
             rho_ref=rho_ref
         )
         
-        self.terms_dict = {
+        self.component_dict = {
             "heat": self.t_name,
             "salt": self.s_name,
         }
@@ -75,6 +62,13 @@ class WaterMassTransformations(WaterMass):
                     f"surface_flux_{term}":v
                     for (term,v) in cdict['surface_flux'].items()
                 }
+            if 'surface_mass_flux' in cdict:
+                for density_var in ["heat", "salt"]:
+                    self.budgets_dict[density_var]['surface_flux'] = {
+                        **self.budgets_dict[density_var]['surface_flux'],
+                        **{f"surface_mass_flux_{term}":v
+                           for (term,v) in cdict['surface_mass_flux'].items()}
+                    }
 
         for (term, bdict) in self.budgets_dict.items():
             setattr(self, f"processes_{term}_dict", {})
@@ -89,92 +83,164 @@ class WaterMassTransformations(WaterMass):
         }
 
     def lambdas(self, lambda_name=None):
+        """
+        Return dictionary of desired lambdas, defaulting to all (temperature, salinity, and all densities).
+
+        Parameters
+        ----------
+        lambda_name: str or list of str
+            Lambda(s) of interest.
+
+        Returns
+        -------
+        list
+        """
         if lambda_name is None:
             return sum(self.lambdas_dict.values(), [])
         else:
             return self.lambdas_dict.get(lambda_name, None)
 
-    # Helper function to get variable name for given process term
-    def process(self, tendency, term):
-        # Organize by scalar and tendency
-        if tendency == "heat":
-            termcode = self.processes_heat_dict.get(term, None)
-        elif tendency == "salt":
-            termcode = self.processes_salt_dict.get(term, None)
-        else:
-            warnings.warn(f"Tendency {tendency} is not defined")
-            return
-        tendcode = self.terms_dict.get(tendency, None)
-        return (tendcode, termcode)
+    def process_names(self, component, term):
+        """
+        Get a tuple containing the names of variables for the density component (temperature or salinity)
+        and the 'process'-specific tendency corresponding to a general 'term' in the tendency equation.
 
-    # Helper function to list available processes
-    def processes(self, check=True):
-        processes = self.processes_heat_dict.keys() | self.processes_salt_dict.keys()
-        if check:
+        Parameters
+        ----------
+        lambda_name: str or list of str
+            Lambda(s) of interest.
+
+        Returns
+        -------
+        names : tuple
+            `(component_name, process)`
+        """
+        if component == "heat":
+            process = self.processes_heat_dict.get(term, None)
+        elif component == "salt":
+            process = self.processes_salt_dict.get(term, None)
+        elif "surface_mass_flux" in term:
+            process = self.processes_mass_dict.get(term, None)
+        else:
+            warnings.warn(f"Component {component} is not defined")
+            return
+        component_name = self.component_dict.get(component, None)
+        return (component_name, process)
+
+    def available_processes(self, available=True):
+        """
+        Get a list of all tendency processes that are both specified by `budgets_dict` and available in
+        the dataset.
+
+        Parameters
+        ----------
+        available: bool
+            Default True. If False, include processes that are not available in the dataset.
+
+        Returns
+        -------
+        names : tuple
+            `(component_name, process)`
+        """
+        processes = (
+            self.processes_heat_dict.keys() |
+            self.processes_salt_dict.keys() |
+            self.processes_mass_dict.keys()
+        )
+        if available:
             _processes = []
             for process in processes:
-                p1 = self.processes_salt_dict.get(process, None)
-                p2 = self.processes_heat_dict.get(process, None)
-                if ((p1 is None) or (p1 is not None and p1 in self.ds)) and (
-                    (p2 is None) or (p2 is not None and p2 in self.ds)
+                p1 = self.processes_heat_dict.get(process, None)
+                p2 = self.processes_salt_dict.get(process, None)
+                p3 = self.processes_mass_dict.get(process, None)
+                if (((p1 is None) or (p1 is not None and p1 in self.ds)) and
+                    ((p2 is None) or (p2 is not None and p2 in self.ds)) and
+                    ((p3 is None) or (p3 is not None and p3 in self.ds))
                 ):
                     _processes.append(process)
             return _processes
         else:
             return processes
 
-    def datadict(self, tendency, term):
-        (tendcode, termcode) = self.process(tendency, term)
-        # tendcode: tendency form (heat or salt)
-        # termcode: process term (e.g., boundary_forcing)
-        if termcode is None or termcode not in self.ds:
+    def datadict(self, component, term):
+        """
+        Get a dictionary that organizes the variables and metadata necessary to evaluate tendency terms.
+
+        Parameters
+        ----------
+        component: str
+            Either "heat" or "salt".
+        term: str
+            Name of tendency term
+
+        Returns
+        -------
+        ddict : dict
+        """
+        
+        (component_name, process) = self.process_names(component, term)
+        
+        if process is None or process not in self.ds:
             return
 
-        if tendency == "salt":
+        if component == "salt":
             # Multiply salt tendency by 1000 to convert to g/m^2/s
-            tend_arr = self.ds[termcode] * 1000
+            tend_arr = self.ds[process] * 1000
         else:
-            tend_arr = self.ds[termcode]
+            tend_arr = self.ds[process]
 
         n_zcoords = len([
             c for c in self.grid.axes['Z'].coords.values()
-            if c in self.ds[termcode].dims
+            if c in self.ds[process].dims
         ])
         if n_zcoords>0:
             return {
-                "scalar": {"array": self.ds[tendcode]},
+                "scalar": {"array": self.ds[component_name]},
                 "tendency": {
                     "array": tend_arr,
                     "extensive": True,
                     "boundary": False
                 },
             }
+        
         # if no vertical coordinate in tend_arr, assume it is a surface flux
         elif n_zcoords==0:
-            if tendency == "heat":
+            z_coord = self.grid.axes['Z'].coords["center"]
+            if "surface_mass_flux" in term:
+                mass_flux = self.expand_surface_array_vertically(
+                    self.ds[process],
+                )
+                tend_arr = xr.zeros_like(self.ds[process])
+                
+            else:
+                mass_flux = self.expand_surface_array_vertically(
+                    xr.zeros_like(self.ds[process]),
+                )
+            
+            if component == "heat":
+                scalar = self.ds[self.budgets_dict["heat"]["surface_lambda"]]
+                
                 # Need to multiply mass flux by cp to convert
                 # to energy flux (in W/m^2/degC)
-                mass_flux = self.expand_surface_array_vertically(
-                    self.ds["wfo"] * self.cp,
-                )
+                mass_flux *= self.cp
                 scalar_in_mass = self.expand_surface_array_vertically(
-                    self.ds["tos"],
+                    self.ds[self.budgets_dict["heat"]["surface_lambda"]],
                 )
-            elif tendency == "salt":
-                mass_flux = self.expand_surface_array_vertically(
-                    self.ds["wfo"],
-                )
+            elif component == "salt":
+                scalar = self.ds[self.budgets_dict["salt"]["surface_lambda"]]
+                
                 scalar_in_mass = self.expand_surface_array_vertically(
-                    xr.zeros_like(self.ds["sos"]),
+                    xr.zeros_like(self.ds[self.budgets_dict["salt"]["surface_lambda"]]),
                 )
             else:
-                raise ValueError(f"termcode {termcode} not yet supported.")
+                raise ValueError(f"process {process} not yet supported.")
+                
             return {
-                "scalar": {"array": self.ds[tendcode]},
+                "scalar": {
+                    "array": scalar.expand_dims({z_coord:self.ds[z_coord]})
+                },
                 "tendency": {
-                    "array": self.expand_surface_array_vertically(
-                        tend_arr
-                    ),
+                    "array": self.expand_surface_array_vertically(tend_arr),
                     "extensive": True,
                     "boundary": True
                 },
@@ -187,7 +253,17 @@ class WaterMassTransformations(WaterMass):
 
     def rho_tend(self, term):
         """
-        Calculate the tendency of the locally-referenced potential density.
+        Get density tendency 'term' from underlying heat and salt tendencies. 
+
+        Parameters
+        ----------
+        term: str
+            Name of tendency term
+
+        Returns
+        -------
+        rho_tend_heat, rho_tend_salt
+            The two distinct components contributing to the overall density tendency.
         """
 
         if "alpha" not in self.ds or "beta" not in self.ds:
@@ -213,10 +289,17 @@ class WaterMassTransformations(WaterMass):
     def calc_hlamdot_and_lambda(self, lambda_name, term):
         """
         Get layer-integrated extensive tracer tendencies (* m/s) and corresponding scalar field of lambda
-        lambda_name: str
+        
+        Parameters
+        ----------
+        lambda_name : str
             Specifies lambda
-        term: str
+        term : str
             Specifies process term
+            
+        Returns
+        ----------
+        hlamdot, lam : xr.DataArray, xr.DataArray
         """
 
         # Get layer-integrated potential temperature tendency
@@ -243,7 +326,7 @@ class WaterMassTransformations(WaterMass):
         elif lambda_name in self.lambdas("density"):
             rhos = self.rho_tend(term)
             hlamdot = {}
-            for idx, tend in enumerate(self.terms_dict.keys()):
+            for idx, tend in enumerate(self.component_dict.keys()):
                 hlamdot[tend] = rhos[idx]
             lam = self.get_density(lambda_name)
         
@@ -258,7 +341,7 @@ class WaterMassTransformations(WaterMass):
 
     def transform_hlamdot(self, lambda_name, term, bins=None):
         """
-        Compute extensive tendencies and transform them into lambda space
+        Lazily compute extensive tendencies and transform them into lambda space
         along the vertical ("Z") dimension.
         """
 
@@ -278,8 +361,8 @@ class WaterMassTransformations(WaterMass):
 
         if lambda_name in self.lambdas("density"):
             hlamdot_transformed = []
-            for tend in self.terms_dict.keys():
-                (tendcode, termcode) = self.process(tend, term)
+            for tend in self.component_dict.keys():
+                (component_name, process) = self.process_names(tend, term)
                 if hlamdot[tend] is not None:
                     hlamdot_transformed.append(
                         (
@@ -291,11 +374,12 @@ class WaterMassTransformations(WaterMass):
                                 method="conservative",
                             )
                             / np.diff(bins)
-                        ).rename(termcode)
+                        ).rename(f"{term}_{tend}")
                     )
+                        
             hlamdot_transformed = xr.merge(hlamdot_transformed)
         else:
-            (tendcode, termcode) = self.process(
+            (component_name, process) = self.process_names(
                 "salt" if lambda_name == "salinity" else "heat", term
             )
             hlamdot_transformed = (
@@ -303,12 +387,12 @@ class WaterMassTransformations(WaterMass):
                     hlamdot, "Z", target=bins, target_data=lam_i, method="conservative"
                 )
                 / np.diff(bins)
-            ).rename(termcode)
+            ).rename(f"{term}")
         return hlamdot_transformed
 
     def transform_hlamdot_and_integrate(self, lambda_name, term=None, bins=None):
         """
-        Compute extensive tendencies, transform them into lambda space
+        Lazily compute extensive tendencies, transform them into lambda space
         along the vertical ("Z") dimension, and integrate along the
         horizontal dimensions ("X", "Y").
         """
@@ -316,7 +400,7 @@ class WaterMassTransformations(WaterMass):
         # If term is not given, use all available process terms
         if term is None:
             wmts = []
-            for term in self.processes(False):
+            for term in self.available_processes():
                 wmt = self.transform_hlamdot_and_integrate(lambda_name, term, bins)
                 if wmt is not None:
                     wmts.append(wmt)
@@ -335,58 +419,57 @@ class WaterMassTransformations(WaterMass):
     ### Helper function to groups terms based on density components (sum_components)
     ### and physical processes (group_processes)
     # Calculate the sum of grouped terms
-    def _sum_terms(self, ds, newterm, terms):
+    def _sum_terms(self, ds_terms, newterm, terms):
         das = []
         for term in terms:
-            if term in ds:
-                das.append(ds[term])
+            if term in ds_terms:
+                das.append(ds_terms[term])
         if len(das):
-            ds[newterm] = sum(das)
+            ds_terms[newterm] = sum(das)
 
     def _group_processes(self, hlamdot):
         if hlamdot is None:
             return
-        for component in ["heat", "salt"]:
-            process_dict = getattr(self, f"processes_{component}_dict")
+        for suffix in ["", "_heat", "_salt"]:
             self._sum_terms(
                 hlamdot,
-                f"external_forcing_{component}",
+                f"external_forcing{suffix}",
                 [
-                    process_dict["boundary_forcing"],
-                    process_dict["frazil_ice"],
-                    process_dict["geothermal"],
+                    f"boundary_forcing{suffix}",
+                    f"frazil_ice{suffix}",
+                    f"geothermal{suffix}",
                 ],
             )
             self._sum_terms(
                 hlamdot,
-                f"diffusion_{component}",
+                f"diffusion{suffix}",
                 [
-                    process_dict["vertical_diffusion"],
-                    process_dict["neutral_diffusion"]
+                    f"vertical_diffusion{suffix}",
+                    f"neutral_diffusion{suffix}"
                 ]
             )
             self._sum_terms(
                 hlamdot,
-                f"advection_{component}",
+                f"advection{suffix}",
                 [
-                    process_dict["horizontal_advection"],
-                    process_dict["vertical_advection"]
+                    f"horizontal_advection{suffix}",
+                    f"vertical_advection{suffix}"
                 ]
             )
             self._sum_terms(
                 hlamdot,
-                f"diabatic_forcing_{component}",
+                f"diabatic_forcing{suffix}",
                 [
-                    f"external_forcing_{component}",
-                    f"diffusion_{component}"
+                    f"external_forcing{suffix}",
+                    f"diffusion{suffix}"
                 ]
             )
             self._sum_terms(
                 hlamdot,
-                f"total_tendency_{component}",
+                f"total_tendency{suffix}",
                 [
-                    f"advection_{component}",
-                    f"diabatic_forcing_{component}"
+                    f"advection{suffix}",
+                    f"diabatic_forcing{suffix}"
                 ]
             )
         return hlamdot
@@ -395,18 +478,29 @@ class WaterMassTransformations(WaterMass):
         if hlamdot is None:
             return
         
-        for proc in self.processes():
+        for proc in self.available_processes():
+            proc_list = [
+                proc+f"_{component}"
+                for component in ["heat", "salt"]
+            ]
             self._sum_terms(
                 hlamdot,
                 proc,
-                [
-                    getattr(self, f"processes_{component}_dict")[proc]
-                    for component in ["heat", "salt"]
-                ]
+                proc_list
             )
         if group_processes:
-            for proc in ["external_forcing", "diffusion", "advection", "diabatic_forcing", "total_tendency"]:
-                self._sum_terms(hlamdot, proc, [f"{proc}_{component}" for component in ["heat", "salt"]])
+            for proc in [
+                "external_forcing",
+                "diffusion",
+                "advection",
+                "diabatic_forcing",
+                "total_tendency"
+            ]:
+                self._sum_terms(
+                    hlamdot,
+                    proc,
+                    [f"{proc}_{component}" for component in ["heat", "salt"]]
+                )
         return hlamdot
 
     def map_transformations(self, lambda_name, term=None, sum_components=True, group_processes=False, **kwargs):
@@ -417,7 +511,7 @@ class WaterMassTransformations(WaterMass):
         # If term is not given, use all available process terms
         if term is None:
             _local_transformations = []
-            for term in self.processes(False):
+            for term in self.available_processes(False):
                 _local_transformation = self.map_transformations(lambda_name, term, sum_components=False, group_processes=False, **kwargs)
                 if _local_transformation is not None:
                     _local_transformations.append(_local_transformation)
@@ -437,7 +531,7 @@ class WaterMassTransformations(WaterMass):
 
     def integrate_transformations(self, lambda_name, *args, **kwargs):
         """
-        Computed horizontally-integrated water mass transformations.
+        Lazily compute horizontally-integrated water mass transformations.
 
         Parameters
         ----------
@@ -471,120 +565,5 @@ class WaterMassTransformations(WaterMass):
             transformations = self._group_processes(transformations)
         if sum_components:
             transformations = self._sum_components(transformations, group_processes=group_processes)
-
+            
         return transformations
-
-    def isosurface_mean(self, *args, ti=None, tf=None, dl=0.1, **kwargs):
-        """
-        Mean transformation across lambda isosurface(s).
-
-        Parameters
-        ----------
-        lambda_name : str
-            Specifies lambda (e.g., 'temperature', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
-        term : str, optional
-            Specifies process term (e.g., 'boundary_forcing', 'vertical_diffusion', etc.). Use `processes()` to list all available terms.
-        val : float or ndarray
-            Value(s) of lambda for which isosurface(s) is/are defined
-        ti : str
-            Starting date. ti=None by default.
-        tf : str
-            End date. tf=None by default.
-        dl : float
-            Width of lamba bin (delta) for which isosurface(s) is/are defined.
-        sum_components : boolean, optional
-            Specify whether heat and salt tendencies are summed together (True) or kept separated (False). True by default.
-        group_processes : boolean, optional
-            Specify whether process terms are summed to categories forcing and diffusion. False by default.
-
-        Returns
-        -------
-        local_transformations_mean : {xarray.DataArray, xarray.Dataset}
-            Spatial field of mean transformation at a given (set of) lambda value(s).
-            local_transformations_mean is xarray.DataSet when multiple terms are included (term=None) or sum_components=False.
-        """
-
-        if len(args) == 3:
-            (lambda_name, term, val) = args
-        elif len(args) == 2:
-            (lambda_name, val) = args
-            term = None
-        else:
-            warnings.warn(
-                "isosurface_mean() requires arguments (lambda_name, term, val,...) or (lambda_name, val,...)"
-            )
-            return
-
-        if lambda_name not in self.lambdas("density"):
-            tendency = [k for k, v in self.lambdas_dict.items() if v[0] == lambda_name]
-            if len(tendency) == 1:
-                tendcode = self.terms_dict.get(tendency[0], None)
-            else:
-                warnings.warn("Tendency is not defined")
-                return
-        else:
-            tendcode = lambda_name
-
-        # Define bins based on val
-        kwargs["bins"] = bin_define(np.min(val) - dl, np.max(val) + dl, dl)
-
-        # Calculate spatiotemporal field of transformation
-        local_transformations = self.map_transformations(lambda_name, term, **kwargs)
-        # TODO: Preferred method should be ndays_standard if calendar type is 'noleap'. Thus, avoiding to load the full time array
-        if (
-            "calendar_type" in self.ds.time.attrs
-            and self.ds.time.attrs["calendar_type"].lower() == "noleap"
-        ):
-            # Number of days in each month
-            n_years = len(np.unique(local_transformations.time.dt.year))
-            # Monthly data
-            dm = np.diff(local_transformations.indexes["time"].month)
-            udm = np.unique([m + 12 if m == -11 else m for m in dm])
-            if np.array_equal(udm, [1]):
-                ndays_standard = np.array(
-                    [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-                )
-                assert np.sum(ndays_standard) == 365
-                dt = xr.DataArray(
-                    ndays_standard[local_transformations.time.dt.month.values - 1],
-                    coords=[self.ds.time],
-                    dims=["time"],
-                    name="days per month",
-                )
-            # Annual data
-            dy = np.diff(local_transformations.indexes["time"].year)
-            udy = np.unique(dy)
-            if np.array_equal(udy, [1]):
-                dt = xr.DataArray(
-                    np.tile(365, n_years),
-                    coords=[self.ds.time],
-                    dims=["time"],
-                    name="days per year",
-                )
-        elif "time_bounds" in self.ds:
-            # Extract intervals (units are in ns)
-            deltat = self.ds.time_bounds[:, 1].values - self.ds.time_bounds[:, 0].values
-            # Convert intervals to days
-            dt = xr.DataArray(
-                deltat, coords=[self.ds.time], dims=["time"], name="days per month"
-            ) / np.timedelta64(1, "D")
-        elif "time_bnds" in self.ds:
-            # Extract intervals (units are in ns)
-            deltat = self.ds.time_bnds[:, 1].values - self.ds.time_bnds[:, 0].values
-            # Convert intervals to days
-            dt = xr.DataArray(
-                deltat, coords=[self.ds.time], dims=["time"], name="days per month"
-            ) / np.timedelta64(1, "D")
-        else:
-            # TODO: Create dt with ndays_standard but output warning that calendar_type is not specified.
-            # warnings.warn('Unsupported calendar type')
-            print("Unsupported calendar type", self.ds.time.attrs)
-            return
-
-        # Convert to dask array for lazy calculations
-        dt = dt.chunk(1)
-        local_transformations_mean = (
-            local_transformations.sel({tendcode: val}, method="nearest").sel(time=slice(ti, tf))
-            * dt.sel(time=slice(ti, tf))
-        ).sum("time") / dt.sel(time=slice(ti, tf)).sum("time")
-        return local_transformations_mean

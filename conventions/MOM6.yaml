@@ -1,6 +1,7 @@
 ---
 heat:
   lambda: "thetao"
+  surface_lambda: "tos"
   lhs:
     tendency: "opotemptend"
   rhs:
@@ -22,7 +23,8 @@ heat:
     basal: null
 
 salt:
-  lambda: "salt"
+  lambda: "so"
+  surface_lambda: "sos"
   lhs:
     tendency: "osalttend"
   rhs:
@@ -45,7 +47,8 @@ salt:
     
 mass:
   lambda: "density"
-  surface_flux:
+  thickness: "thkcello"
+  surface_mass_flux:
     total: "wfo"
     rain_and_ice: "prlq"
     snow: "prsn"

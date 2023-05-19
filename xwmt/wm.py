@@ -5,11 +5,10 @@ import warnings
 
 class WaterMass:
     """
-    A class object with multiple methods to do full 3d watermass transformation analysis.
+    A class object with multiple methods for characterizing and analyzing water masses in ocean models.
     """
     def __init__(
         self,
-        ds,
         grid,
         t_name="thetao",
         s_name="salt",
@@ -23,10 +22,8 @@ class WaterMass:
 
         Parameters
         ----------
-        ds : xarray.Dataset
-            Contains the relevant tendencies and/or surface fluxes along with grid information.
         grid: xgcm.Grid
-            Contains information about ocean model grid discretization, e.g. coordinates and metrics.
+            Contains information about ocean model grid coordinates, metrics, and data variables.
         t_name: str
             Name of potential temperature variable [in degrees Celsius] in ds.
         s_name: str
@@ -41,8 +38,8 @@ class WaterMass:
             Value of reference potential density. Note: WaterMass is assumed to be Boussinesq.
         """
         
-        self.ds = ds.copy()
         self.grid = grid
+        self.ds = self.grid._ds
         self.t_name = t_name
         self.s_name = s_name
         self.h_name = h_name
@@ -77,7 +74,8 @@ class WaterMass:
         
     def get_density(self, density_name=None):
         """
-        Compute density variable from layer temperature, salinity, and thickness.
+        Derive density variables from layer temperature, salinity, and thickness,
+        and add them to the dataset (if not already present).
         Uses the TEOS10 algorithm from the `gsw` package by default, unless "alpha"
         and "beta" variables are already provided in `self.ds`.
 
@@ -212,7 +210,7 @@ class WaterMass:
             {z_coord: cumh.idxmax(z_coord)}
         ).where(cumh.isel({z_coord:-1})!=0.)
     
-    def expand_surface_array_vertically(self, da_surf):
+    def expand_surface_array_vertically(self, da_surf, target_position="outer"):
         """
         Expand surface xr.DataArray (with no "Z"-dimension coordinate) in the vertical,
         filling with zeros in all layers except the one that outcrops.
@@ -222,12 +220,12 @@ class WaterMass:
         da_surf: xarray.DataArray
             Variable that is to be expanded in the vertical.
         """
-        z_coord = self.grid.axes['Z'].coords['outer']
+        z_coord = self.grid.axes['Z'].coords[target_position]
         return (
             da_surf.expand_dims({z_coord: self.ds[z_coord]})
             .where(
                 self.ds[z_coord] ==
-                self.get_outcrop_lev(position="outer"),
+                self.get_outcrop_lev(position=target_position),
                 0.
             )
         )

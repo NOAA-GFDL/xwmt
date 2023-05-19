@@ -5,10 +5,11 @@ import numpy as np
 import xarray as xr
 import xgcm
 
-## Functions to obtain hlamdot
 def Jlammass_from_Qm_lamf_lam(Qm, lamf, lam):
     """
-    Input
+    Calculate lambda tendency associated with a mass flux.
+    
+    Parameters
     -----
     Qm : xarray.DataArray
         massflux (e.g., wfo)
@@ -25,9 +26,14 @@ def hlamdot_from_Jlam(grid, Jlam, dim):
     provided various forms of input (fluxes, tendencies, intensive, extensive)
     """
     # For convergence, need to reverse the sign
-    h = grid.Z_metrics["center"]
-    lamdot = -grid.diff(Jlam, dim)/h.where(h!=0.)
-    hlamdot = h*lamdot.fillna(0.)
+    dJlam = -grid.diff(Jlam, dim)
+    if "Z_metrics" in list(vars(grid)):
+        h = grid.Z_metrics["center"]
+        h = h.where(h!=0.)
+    else:
+        h = grid.get_metric(dJlam, "Z")
+    lamdot = dJlam/h
+    hlamdot = h.fillna(0.)*lamdot.fillna(0.)
     return hlamdot
 
 def calc_hlamdotmass(grid, datadict):
@@ -91,7 +97,7 @@ def calc_hlamdot_tendency(grid, datadict):
     else:
         hlamdot = hlamdot_from_lamdot_h(
             datadict["tendency"]["array"],
-            grid.get_metric(datadict["tendency"]["array"], "Z")
+            grid.Z_metrics["center"]
         )
     return hlamdot
 
