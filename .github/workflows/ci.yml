@@ -49,6 +49,7 @@ jobs:
       - name: Download test data
         run: |
           curl -o xwmt_test_data.nc ftp://ftp.gfdl.noaa.gov/perm/John.Krasting/xwmt/xwmt_test_data.20220810.nc
+          curl -o xwmt_test_3d_data_baltic_3d.nc ftp://ftp.gfdl.noaa.gov/perm/John.Krasting/xwmt/xwmt_test_data_baltic_3d.20221012.nc
       - name: Test with pytest
         run: |
           pytest
