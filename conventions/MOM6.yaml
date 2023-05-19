@@ -13,11 +13,10 @@ heat:
     frazil_ice: "frazil_heat_tendency"
     geothermal: "internal_heat_heat_tendency"
   surface_flux:
-    total: "hfds"
     latent: "hflso"
     sensible: "hfsso"
     longwave: "rlntds"
-    shortwave: "rsntds"
+    shortwave: "rsdo"
     frazil_ice: "hfsifrazil"
     mass_transfer: "heat_content_surfwater"
     basal: null
@@ -36,7 +35,6 @@ salt:
     frazil_ice: null
     geothermal: null
   surface_flux:
-    total: "sfdsi"
     latent: null
     sensible: null
     longwave: null
@@ -49,7 +47,6 @@ mass:
   lambda: "density"
   thickness: "thkcello"
   surface_mass_flux:
-    total: "wfo"
     rain_and_ice: "prlq"
     snow: "prsn"
     evaporation: "evs"

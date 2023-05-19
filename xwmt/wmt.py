@@ -188,14 +188,16 @@ class WaterMassTransformations(WaterMass):
             tend_arr = self.ds[process] * 1000
         else:
             tend_arr = self.ds[process]
+        scalar = self.ds[component_name]
 
         n_zcoords = len([
             c for c in self.grid.axes['Z'].coords.values()
             if c in self.ds[process].dims
         ])
-        if n_zcoords>0:
+        
+        if term[:7]!="surface":
             return {
-                "scalar": {"array": self.ds[component_name]},
+                "scalar": {"array": scalar},
                 "tendency": {
                     "array": tend_arr,
                     "extensive": True,
@@ -203,22 +205,27 @@ class WaterMassTransformations(WaterMass):
                 },
             }
         
-        # if no vertical coordinate in tend_arr, assume it is a surface flux
-        elif n_zcoords==0:
+        elif term[:7]=="surface":
             z_coord = self.grid.axes['Z'].coords["center"]
+            
             if "surface_mass_flux" in term:
                 mass_flux = self.expand_surface_array_vertically(
                     self.ds[process],
                 )
-                tend_arr = xr.zeros_like(self.ds[process])
+                tend_arr = xr.zeros_like(mass_flux)
                 
             else:
-                mass_flux = self.expand_surface_array_vertically(
-                    xr.zeros_like(self.ds[process]),
-                )
+                if n_zcoords == 0:
+                    tend_arr = self.expand_surface_array_vertically(tend_arr)
+                mass_flux = xr.zeros_like(tend_arr)
             
             if component == "heat":
-                scalar = self.ds[self.budgets_dict["heat"]["surface_lambda"]]
+                if n_zcoords == 0:
+                    scalar = (
+                        self.ds[self.budgets_dict["heat"]["surface_lambda"]]
+                        .expand_dims({z_coord:self.ds[z_coord]})
+                        .rename(self.budgets_dict["heat"]["lambda"])
+                    )
                 
                 # Need to multiply mass flux by cp to convert
                 # to energy flux (in W/m^2/degC)
@@ -227,7 +234,12 @@ class WaterMassTransformations(WaterMass):
                     self.ds[self.budgets_dict["heat"]["surface_lambda"]],
                 )
             elif component == "salt":
-                scalar = self.ds[self.budgets_dict["salt"]["surface_lambda"]]
+                if n_zcoords == 0:
+                    scalar = (
+                        self.ds[self.budgets_dict["salt"]["surface_lambda"]]
+                        .expand_dims({z_coord:self.ds[z_coord]})
+                        .rename(self.budgets_dict["salt"]["lambda"])
+                    )
                 
                 scalar_in_mass = self.expand_surface_array_vertically(
                     xr.zeros_like(self.ds[self.budgets_dict["salt"]["surface_lambda"]]),
@@ -237,10 +249,10 @@ class WaterMassTransformations(WaterMass):
                 
             return {
                 "scalar": {
-                    "array": scalar.expand_dims({z_coord:self.ds[z_coord]})
+                    "array": scalar
                 },
                 "tendency": {
-                    "array": self.expand_surface_array_vertically(tend_arr),
+                    "array": tend_arr,
                     "extensive": True,
                     "boundary": True
                 },
