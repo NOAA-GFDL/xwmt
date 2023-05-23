@@ -18,6 +18,7 @@ class WaterMassTransformations(WaterMass):
         self,
         grid,
         budgets_dict,
+        mask=None,
         teos10=True,
         cp=3992.0,
         rho_ref=1035.0,
@@ -55,6 +56,11 @@ class WaterMassTransformations(WaterMass):
             "salt": self.s_name,
         }
         
+        self.lambdas_dict = {
+            **self.component_dict,
+            "density": ["sigma0", "sigma1", "sigma2", "sigma3", "sigma4"],
+        }
+        
         self.budgets_dict = copy.deepcopy(budgets_dict)
         for (component, cdict) in self.budgets_dict.items():
             if 'surface_flux' in cdict:
@@ -76,12 +82,6 @@ class WaterMassTransformations(WaterMass):
                 if ptype in ["lhs", "rhs", "surface_flux"]:
                     getattr(self, f"processes_{term}_dict").update(_processes)
 
-        self.lambdas_dict = {
-            "heat": "temperature",
-            "salt": "salinity",
-            "density": ["sigma0", "sigma1", "sigma2", "sigma3", "sigma4"],
-        }
-
     def lambdas(self, lambda_name=None):
         """
         Return dictionary of desired lambdas, defaulting to all (temperature, salinity, and all densities).
@@ -99,6 +99,15 @@ class WaterMassTransformations(WaterMass):
             return sum(self.lambdas_dict.values(), [])
         else:
             return self.lambdas_dict.get(lambda_name, None)
+        
+    def get_lambda(self, lambda_name=None):
+        if lambda_name in self.lambdas_dict:
+            return self.lambdas_dict[lambda_name]
+        elif lambda_name in self.lambdas_dict["density"]:
+            return lambda_name
+        else:
+            return
+        
 
     def process_names(self, component, term):
         """
@@ -300,7 +309,7 @@ class WaterMassTransformations(WaterMass):
 
     def calc_hlamdot_and_lambda(self, lambda_name, term):
         """
-        Get layer-integrated extensive tracer tendencies (* m/s) and corresponding scalar field of lambda
+        Get layer-integrated extensive tracer tendencies (* kg/m^2/s) and corresponding scalar field of lambda
         
         Parameters
         ----------
@@ -316,18 +325,18 @@ class WaterMassTransformations(WaterMass):
 
         # Get layer-integrated potential temperature tendency
         # from tendency of heat (in W/m^2), lambda = temperature
-        if lambda_name == "temperature":
+        if lambda_name == "heat":
             datadict = self.datadict("heat", term)
             if datadict is not None:
-                hlamdot = calc_hlamdot_tendency(self.grid, datadict) / (self.rho_ref * self.cp)
+                hlamdot = calc_hlamdot_tendency(self.grid, datadict) / self.cp
                 lam = datadict["scalar"]["array"]
 
         # Get layer-integrated salinity tendency
         # from tendency of salt (in g/s/m^2), lambda = salinity
-        elif lambda_name == "salinity":
+        elif lambda_name == "salt":
             datadict = self.datadict("salt", term)
             if datadict is not None:
-                hlamdot = calc_hlamdot_tendency(self.grid, datadict) / self.rho_ref
+                hlamdot = calc_hlamdot_tendency(self.grid, datadict)
                 # TODO: Accurately define salinity field (What does this mean? - HFD)
                 lam = datadict["scalar"]["array"]
 
@@ -339,7 +348,10 @@ class WaterMassTransformations(WaterMass):
             rhos = self.rho_tend(term)
             hlamdot = {}
             for idx, tend in enumerate(self.component_dict.keys()):
-                hlamdot[tend] = rhos[idx]
+                if rhos[idx] is not None:
+                    hlamdot[tend] = rhos[idx]*self.rho_ref
+                else:
+                    hlamdot[tend] = rhos[idx]
             lam = self.get_density(lambda_name)
         
         else:
@@ -351,7 +363,7 @@ class WaterMassTransformations(WaterMass):
         except NameError:
             return None, None
 
-    def transform_hlamdot(self, lambda_name, term, bins=None):
+    def transform_hlamdot(self, lambda_name, term, bins=None, mask=None):
         """
         Lazily compute extensive tendencies and transform them into lambda space
         along the vertical ("Z") dimension.
@@ -360,6 +372,12 @@ class WaterMassTransformations(WaterMass):
         hlamdot, lam = self.calc_hlamdot_and_lambda(lambda_name, term)
         if hlamdot is None:
             return
+        
+        if mask is not None:
+            if type(hlamdot) is dict:
+                hlamdot = {k:v.where(mask, 0.) if v is not None else None for k,v in hlamdot.items()}
+            else:
+                hlamdot = hlamdot.where(mask, 0.)
 
         if bins is None:
             bins = self.bin_percentile(lam, surface=True)
@@ -402,7 +420,7 @@ class WaterMassTransformations(WaterMass):
             ).rename(f"{term}")
         return hlamdot_transformed
 
-    def transform_hlamdot_and_integrate(self, lambda_name, term=None, bins=None):
+    def transform_hlamdot_and_integrate(self, lambda_name, term=None, bins=None, mask=None):
         """
         Lazily compute extensive tendencies, transform them into lambda space
         along the vertical ("Z") dimension, and integrate along the
@@ -413,12 +431,12 @@ class WaterMassTransformations(WaterMass):
         if term is None:
             wmts = []
             for term in self.available_processes():
-                wmt = self.transform_hlamdot_and_integrate(lambda_name, term, bins)
+                wmt = self.transform_hlamdot_and_integrate(lambda_name, term, bins, mask)
                 if wmt is not None:
                     wmts.append(wmt)
             return xr.merge(wmts)
 
-        hlamdot_transformed = self.transform_hlamdot(lambda_name, term, bins=bins)
+        hlamdot_transformed = self.transform_hlamdot(lambda_name, term, bins=bins, mask=mask)
         if hlamdot_transformed is not None and len(hlamdot_transformed):
             dA = self.grid.get_metric(hlamdot_transformed, ['X', 'Y'])
             wmt = (hlamdot_transformed * dA).sum(dA.dims)

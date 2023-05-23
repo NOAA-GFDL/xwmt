@@ -61,7 +61,7 @@ class WaterMass:
                     self.ds[h_name].fillna(0.),
                     "Z",
                     Z_center_extended,
-                    method="conservative"
+                    method="conservative",
                 ).assign_coords({
                     self.grid.axes['Z'].coords['outer']:
                     self.ds[self.grid.axes['Z'].coords['outer']].values
@@ -140,15 +140,16 @@ class WaterMass:
         else:
             if density_name not in self.ds:
                 if "sigma" in density_name:
-                    density = xr.apply_ufunc(
+                    self.ds[density_name] = xr.apply_ufunc(
                         getattr(gsw, density_name), self.ds.sa, self.ds.ct, dask="parallelized"
-                    )
+                    ).rename(density_name)
+                    
                 else:
                     return None
             else:
                 return self.ds[density_name]
 
-            return density.rename(density_name)
+            return self.ds[density_name]
 
     def get_outcrop_lev(self, position="center", incrop=False):
         """
