@@ -395,7 +395,8 @@ class WaterMassTransformations(WaterMass):
                 hlamdot,
                 f"boundary_fluxes{suffix}",
                 [
-                    f"surface_flux{suffix}",
+                    f"surface_exchange_flux{suffix}",
+                    f"surface_ocean_flux_advective_negative_rhs{suffix}",
                     f"bottom_fluxes{suffix}",
                     f"frazil_ice{suffix}"
                 ],
@@ -406,7 +407,7 @@ class WaterMassTransformations(WaterMass):
                 [
                     f"Eulerian_tendency{suffix}",
                     f"advection{suffix}",
-                    f"surface_flux_advection_ocean_negative_lhs"
+                    f"surface_ocean_flux_advective_negative_lhs{suffix}"
                 ]
             )
             self._sum_terms(
