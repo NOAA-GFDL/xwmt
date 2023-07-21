@@ -62,24 +62,10 @@ class WaterMassTransformations(WaterMass):
         }
         
         self.budgets_dict = copy.deepcopy(budgets_dict)
-        for (component, cdict) in self.budgets_dict.items():
-            if 'surface_flux' in cdict:
-                self.budgets_dict[component]['surface_flux'] = {
-                    f"surface_flux_{term}":v
-                    for (term,v) in cdict['surface_flux'].items()
-                }
-            if 'surface_mass_flux' in cdict:
-                for density_var in ["heat", "salt"]:
-                    self.budgets_dict[density_var]['surface_flux'] = {
-                        **self.budgets_dict[density_var]['surface_flux'],
-                        **{f"surface_mass_flux_{term}":v
-                           for (term,v) in cdict['surface_mass_flux'].items()}
-                    }
-
         for (term, bdict) in self.budgets_dict.items():
             setattr(self, f"processes_{term}_dict", {})
             for ptype, _processes in bdict.items():
-                if ptype in ["lhs", "rhs", "surface_flux"]:
+                if ptype in ["lhs", "rhs"]:
                     getattr(self, f"processes_{term}_dict").update(_processes)
 
     def lambdas(self, lambda_name=None):
@@ -128,8 +114,6 @@ class WaterMassTransformations(WaterMass):
             process = self.processes_heat_dict.get(term, None)
         elif component == "salt":
             process = self.processes_salt_dict.get(term, None)
-        elif "surface_mass_flux" in term:
-            process = self.processes_mass_dict.get(term, None)
         else:
             warnings.warn(f"Component {component} is not defined")
             return
@@ -192,11 +176,12 @@ class WaterMassTransformations(WaterMass):
         if process is None or process not in self.ds:
             return
 
-        if component == "salt":
-            # Multiply salt tendency by 1000 to convert to g/m^2/s
-            tend_arr = self.ds[process] * 1000
-        else:
-            tend_arr = self.ds[process]
+        tend_arr = self.ds[process]
+        
+        # Multiply salt tendency by 1000 to convert to g/m^2/s
+        if component=="salt":
+            tend_arr = tend_arr*1000.
+            
         scalar = self.ds[component_name]
 
         n_zcoords = len([
@@ -204,73 +189,16 @@ class WaterMassTransformations(WaterMass):
             if c in self.ds[process].dims
         ])
         
-        if term[:7]!="surface":
-            return {
-                "scalar": {"array": scalar},
-                "tendency": {
-                    "array": tend_arr,
-                    "extensive": True,
-                    "boundary": False
-                },
-            }
+        if n_zcoords == 0:
+            tend_arr = self.expand_surface_array_vertically(tend_arr)
+            tend_dict = {"interfacial_flux": tend_arr}
+        elif n_zcoords > 0:
+            if (self.grid.axes['Z'].coords["outer"] in self.ds[process].dims):
+                tend_dict = {"interfacial_flux": tend_arr}
+            elif (self.grid.axes['Z'].coords["center"] in self.ds[process].dims):
+                tend_dict = {"layer_integrated_tendency": tend_arr}
         
-        elif term[:7]=="surface":
-            z_coord = self.grid.axes['Z'].coords["center"]
-            
-            if "surface_mass_flux" in term:
-                mass_flux = self.expand_surface_array_vertically(
-                    self.ds[process],
-                )
-                tend_arr = xr.zeros_like(mass_flux)
-                
-            else:
-                if n_zcoords == 0:
-                    tend_arr = self.expand_surface_array_vertically(tend_arr)
-                mass_flux = xr.zeros_like(tend_arr)
-            
-            if component == "heat":
-                if n_zcoords == 0:
-                    scalar = (
-                        self.ds[self.budgets_dict["heat"]["surface_lambda"]]
-                        .expand_dims({z_coord:self.ds[z_coord]})
-                        .rename(self.budgets_dict["heat"]["lambda"])
-                    )
-                
-                # Need to multiply mass flux by cp to convert
-                # to energy flux (in W/m^2/degC)
-                mass_flux *= self.cp
-                scalar_in_mass = self.expand_surface_array_vertically(
-                    self.ds[self.budgets_dict["heat"]["surface_lambda"]],
-                )
-            elif component == "salt":
-                if n_zcoords == 0:
-                    scalar = (
-                        self.ds[self.budgets_dict["salt"]["surface_lambda"]]
-                        .expand_dims({z_coord:self.ds[z_coord]})
-                        .rename(self.budgets_dict["salt"]["lambda"])
-                    )
-                
-                scalar_in_mass = self.expand_surface_array_vertically(
-                    xr.zeros_like(self.ds[self.budgets_dict["salt"]["surface_lambda"]]),
-                )
-            else:
-                raise ValueError(f"process {process} not yet supported.")
-                
-            return {
-                "scalar": {
-                    "array": scalar
-                },
-                "tendency": {
-                    "array": tend_arr,
-                    "extensive": True,
-                    "boundary": True
-                },
-                "boundary": {
-                    "flux": mass_flux,
-                    "mass": True,
-                    "scalar_in_mass": scalar_in_mass,
-                },
-            }
+        return {"scalar": scalar, **tend_dict}
 
     def rho_tend(self, term):
         """
@@ -295,13 +223,13 @@ class WaterMassTransformations(WaterMass):
 
         datadict = self.datadict("heat", term)
         if datadict is not None:
-            heat_tend = calc_hlamdot_tendency(self.grid, self.datadict("heat", term))
+            heat_tend = calc_hlamdot_tendency(self.grid, datadict)
             # Density tendency due to heat flux (kg/s/m^2)
             rho_tend_heat = -(self.ds.alpha / self.cp) * heat_tend
 
         datadict = self.datadict("salt", term)
         if datadict is not None:
-            salt_tend = calc_hlamdot_tendency(self.grid, self.datadict("salt", term))
+            salt_tend = calc_hlamdot_tendency(self.grid, datadict)
             # Density tendency due to salt/salinity (kg/s/m^2)
             rho_tend_salt = self.ds.beta * salt_tend
 
@@ -329,7 +257,7 @@ class WaterMassTransformations(WaterMass):
             datadict = self.datadict("heat", term)
             if datadict is not None:
                 hlamdot = calc_hlamdot_tendency(self.grid, datadict) / self.cp
-                lam = datadict["scalar"]["array"]
+                lam = datadict["scalar"]
 
         # Get layer-integrated salinity tendency
         # from tendency of salt (in g/s/m^2), lambda = salinity
@@ -338,7 +266,7 @@ class WaterMassTransformations(WaterMass):
             if datadict is not None:
                 hlamdot = calc_hlamdot_tendency(self.grid, datadict)
                 # TODO: Accurately define salinity field (What does this mean? - HFD)
-                lam = datadict["scalar"]["array"]
+                lam = datadict["scalar"]
 
         # Get layer-integrated potential density tendencies (in kg/s/m^2)
         # from heat and salt, lambda = density
@@ -434,6 +362,8 @@ class WaterMassTransformations(WaterMass):
                 wmt = self.transform_hlamdot_and_integrate(lambda_name, term, bins, mask)
                 if wmt is not None:
                     wmts.append(wmt)
+                else:
+                    print(f"Process '{term}' for component {lambda_name} is unavailable.")
             return xr.merge(wmts)
 
         hlamdot_transformed = self.transform_hlamdot(lambda_name, term, bins=bins, mask=mask)
@@ -463,43 +393,28 @@ class WaterMassTransformations(WaterMass):
         for suffix in ["", "_heat", "_salt"]:
             self._sum_terms(
                 hlamdot,
-                f"external_forcing{suffix}",
+                f"boundary_fluxes{suffix}",
                 [
-                    f"boundary_forcing{suffix}",
-                    f"frazil_ice{suffix}",
-                    f"geothermal{suffix}",
+                    f"surface_flux{suffix}",
+                    f"bottom_fluxes{suffix}",
+                    f"frazil_ice{suffix}"
                 ],
             )
             self._sum_terms(
                 hlamdot,
-                f"diffusion{suffix}",
+                f"kinematic_material_derivative{suffix}",
                 [
-                    f"vertical_diffusion{suffix}",
-                    f"neutral_diffusion{suffix}"
-                ]
-            )
-            self._sum_terms(
-                hlamdot,
-                f"advection{suffix}",
-                [
-                    f"horizontal_advection{suffix}",
-                    f"vertical_advection{suffix}"
-                ]
-            )
-            self._sum_terms(
-                hlamdot,
-                f"diabatic_forcing{suffix}",
-                [
-                    f"external_forcing{suffix}",
-                    f"diffusion{suffix}"
-                ]
-            )
-            self._sum_terms(
-                hlamdot,
-                f"total_tendency{suffix}",
-                [
+                    f"Eulerian_tendency{suffix}",
                     f"advection{suffix}",
-                    f"diabatic_forcing{suffix}"
+                    f"surface_flux_advection_ocean_negative_lhs"
+                ]
+            )
+            self._sum_terms(
+                hlamdot,
+                f"process_material_derivative{suffix}",
+                [
+                    f"boundary_fluxes{suffix}",
+                    f"diffusion{suffix}"
                 ]
             )
         return hlamdot
@@ -520,11 +435,9 @@ class WaterMassTransformations(WaterMass):
             )
         if group_processes:
             for proc in [
-                "external_forcing",
-                "diffusion",
-                "advection",
-                "diabatic_forcing",
-                "total_tendency"
+                "boundary_fluxes",
+                "kinematic_material_derivative",
+                "process_material_derivative"
             ]:
                 self._sum_terms(
                     hlamdot,
