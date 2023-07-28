@@ -68,7 +68,7 @@ class WaterMassTransformations(WaterMass):
                 if ptype in ["lhs", "rhs"]:
                     getattr(self, f"processes_{term}_dict").update(_processes)
 
-    def lambdas(self, lambda_name=None):
+    def lambdas(self, lambda_key=None):
         """
         Return dictionary of desired lambdas, defaulting to all (temperature, salinity, and all densities).
 
@@ -81,12 +81,12 @@ class WaterMassTransformations(WaterMass):
         -------
         list
         """
-        if lambda_name is None:
+        if lambda_key is None:
             return sum(self.lambdas_dict.values(), [])
         else:
-            return self.lambdas_dict.get(lambda_name, None)
+            return self.lambdas_dict.get(lambda_key, None)
         
-    def get_lambda(self, lambda_name=None):
+    def get_lambda_var(self, lambda_name=None):
         if lambda_name in self.lambdas_dict:
             return self.lambdas_dict[lambda_name]
         elif lambda_name in self.lambdas_dict["density"]:
@@ -94,6 +94,15 @@ class WaterMassTransformations(WaterMass):
         else:
             return
         
+    def get_lambda_key(self, lambda_var):
+        for k,v in self.lambdas_dict.items():
+            if type(v) is str:
+                if lambda_var == v:
+                    return(k)
+            elif type(v) is list:
+                if lambda_var in v:
+                    return(k)
+
 
     def process_names(self, component, term):
         """
@@ -354,7 +363,6 @@ class WaterMassTransformations(WaterMass):
         along the vertical ("Z") dimension, and integrate along the
         horizontal dimensions ("X", "Y").
         """
-
         # If term is not given, use all available process terms
         if term is None:
             wmts = []
@@ -381,43 +389,41 @@ class WaterMassTransformations(WaterMass):
     # Calculate the sum of grouped terms
     def _sum_terms(self, ds_terms, newterm, terms):
         das = []
-        for term in terms:
-            if term in ds_terms:
+        if isinstance(ds_terms, xr.DataArray) and isinstance(terms, str):
+            if terms == ds_terms.name:
                 das.append(ds_terms[term])
+        elif isinstance(ds_terms, xr.Dataset):
+            for term in terms:
+                if term in ds_terms:
+                    das.append(ds_terms[term])
         if len(das):
             ds_terms[newterm] = sum(das)
 
     def _group_processes(self, hlamdot):
         if hlamdot is None:
             return
-        for suffix in ["", "_heat", "_salt"]:
-            self._sum_terms(
-                hlamdot,
-                f"boundary_fluxes{suffix}",
-                [
-                    f"surface_exchange_flux{suffix}",
-                    f"surface_ocean_flux_advective_negative_rhs{suffix}",
-                    f"bottom_fluxes{suffix}",
-                    f"frazil_ice{suffix}"
-                ],
-            )
-            self._sum_terms(
-                hlamdot,
-                f"kinematic_material_derivative{suffix}",
-                [
-                    f"Eulerian_tendency{suffix}",
-                    f"advection{suffix}",
-                    f"surface_ocean_flux_advective_negative_lhs{suffix}"
-                ]
-            )
-            self._sum_terms(
-                hlamdot,
-                f"process_material_derivative{suffix}",
-                [
-                    f"boundary_fluxes{suffix}",
-                    f"diffusion{suffix}"
-                ]
-            )
+        for c in hlamdot.coords:
+            lambda_key = self.get_lambda_key(c.split("_")[0])
+            if (lambda_key is not None):
+                if lambda_key == "density":
+                    suffixes = ["", "_heat", "_salt"]
+                    budget = self.budgets_dict["heat"]
+                else:
+                    suffixes = [""]
+                    budget = self.budgets_dict[lambda_key]
+                for suffix in suffixes:
+                    if 'lhs' in budget:
+                        self._sum_terms(
+                            hlamdot,
+                            f"kinematic_material_derivative{suffix}",
+                            [f"{term}{suffix}" for term in budget['lhs'].keys()]
+                        )
+                    if 'rhs' in budget:
+                        self._sum_terms(
+                            hlamdot,
+                            f"process_material_derivative{suffix}",
+                            [f"{term}{suffix}" for term in budget['rhs'].keys()]
+                        )
         return hlamdot
 
     def _sum_components(self, hlamdot, group_processes = False):
@@ -436,7 +442,6 @@ class WaterMassTransformations(WaterMass):
             )
         if group_processes:
             for proc in [
-                "boundary_fluxes",
                 "kinematic_material_derivative",
                 "process_material_derivative"
             ]:
