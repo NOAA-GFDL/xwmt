@@ -406,7 +406,7 @@ class WaterMassTransformations(WaterMass):
             lambda_key = self.get_lambda_key(c.split("_")[0])
             if (lambda_key is not None):
                 if lambda_key == "density":
-                    suffixes = ["", "_heat", "_salt"]
+                    suffixes = ["_heat", "_salt", ""]
                     budget = self.budgets_dict["heat"]
                 else:
                     suffixes = [""]
@@ -432,8 +432,8 @@ class WaterMassTransformations(WaterMass):
         
         for proc in self.available_processes():
             proc_list = [
-                proc+f"_{component}"
-                for component in ["heat", "salt"]
+                f"{proc}{suffix}"
+                for suffix in ["_heat", "_salt"]
             ]
             self._sum_terms(
                 hlamdot,
@@ -448,7 +448,7 @@ class WaterMassTransformations(WaterMass):
                 self._sum_terms(
                     hlamdot,
                     proc,
-                    [f"{proc}_{component}" for component in ["heat", "salt"]]
+                    [f"{proc}{suffix}" for suffix in ["_heat", "_salt"]]
                 )
         return hlamdot
 
@@ -471,10 +471,10 @@ class WaterMassTransformations(WaterMass):
             if isinstance(local_transformations, xr.DataArray):
                 local_transformations = local_transformations.to_dataset()
 
-        if group_processes:
-            local_transformations = self._group_processes(local_transformations)
         if sum_components:
             local_transformations = self._sum_components(local_transformations, group_processes=group_processes)
+        if group_processes:
+            local_transformations = self._group_processes(local_transformations)
 
         return local_transformations
 
@@ -510,9 +510,9 @@ class WaterMassTransformations(WaterMass):
         transformations = self.transform_hlamdot_and_integrate(lambda_name, *args, **kwargs)
 
         # process this function arguments
-        if group_processes:
-            transformations = self._group_processes(transformations)
         if sum_components:
             transformations = self._sum_components(transformations, group_processes=group_processes)
+        if group_processes:
+            transformations = self._group_processes(transformations)
             
         return transformations
