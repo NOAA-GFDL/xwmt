@@ -1,5 +1,6 @@
 import numpy as np
 import xarray as xr
+import xgcm
 import gsw
 import warnings
 
@@ -67,10 +68,25 @@ class WaterMass:
                     self.ds[self.grid.axes['Z'].coords['outer']].values
                 })
             setattr(self.grid, "Z_metrics", {
-                    "center": self.ds[h_name],
-                    "outer": self.ds[f'{h_name}_i']
-                }
-            )
+                "center": self.ds[h_name],
+                "outer": self.ds[f'{h_name}_i']
+            })
+        elif "Z" not in self.grid.axes:
+            self.ds["z_l"] = xr.DataArray([0.5], dims=("z_l",))
+            self.ds["z_i"] = xr.DataArray([0, 1.], dims=("z_i",))
+            self.ds["h"] = xr.DataArray([1], dims=("z_l",))
+            self.ds["h_i"] = xr.DataArray([0.5, 0.5], dims=("z_i",))
+            coords_2d = {ax:self.grid.axes[ax].coords for ax in self.grid.axes.keys()}
+            coords_2d["Z"] = {"center": "z_l", "outer": "z_i"} 
+            metrics_2d = {k:vv.name for (k,v) in self.grid._metrics.items() for vv in v}
+            periodic_2d = [self.grid.axes[ax]._periodic for ax in self.grid.axes.keys() if self.grid.axes[ax]._periodic is not None]
+            self.grid = xgcm.Grid(self.ds, coords=coords_2d, metrics=metrics_2d, periodic=periodic_2d)
+            setattr(self.grid, "Z_metrics", {
+                "center": self.ds["h"],
+                "outer": self.ds["h_i"]
+            })
+            self.h_name = "h"
+            
         
     def get_density(self, density_name=None):
         """
@@ -92,10 +108,10 @@ class WaterMass:
             defined by kwarg t_name (default: {self.t_name}).")
         if self.s_name not in self.ds:
             raise ValueError(f"ds must include salinity variable\
-            defined by kwarg t_name (default: {self.s_name}).")
+            defined by kwarg s_name (default: {self.s_name}).")
         if self.h_name not in self.ds:
             raise ValueError(f"ds must include thickness variable\
-            defined by kwarg t_name (default: {self.h_name}).")
+            defined by kwarg h_name (default: {self.h_name}).")
         
         if (
             "alpha" not in self.ds or "beta" not in self.ds or self.teos10
@@ -164,10 +180,6 @@ class WaterMass:
         incrop: bool
             Default: False. If True, returns the seafloor incrop level instead. 
         """
-        if self.h_name not in self.ds:
-            raise ValueError(f"ds must include thickness variable\
-            defined by kwarg t_name (default: {self.h_name}).")
-        
         z_coord = self.grid.axes['Z'].coords[position]
         dk = int(2*incrop - 1)
         h = self.grid.Z_metrics[position]
@@ -192,10 +204,6 @@ class WaterMass:
         **kwargs:
             Passed to the `xr.DataArray.sel` method on the vertical thickness.
         """
-        if self.h_name not in self.ds:
-            raise ValueError(f"ds must include thickness variable\
-            defined by kwarg t_name (default: {self.h_name}).")
-
         z_coord = self.grid.axes['Z'].coords[position]
         dk = int(2*incrop - 1)
         h = self.grid.Z_metrics[position].sel(**kwargs)

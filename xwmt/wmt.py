@@ -41,20 +41,29 @@ class WaterMassTransformations(WaterMass):
             Value of reference potential density. Note: WaterMass is assumed to be Boussinesq.
         """
         
+        self.component_dict = {}
+        for component in ["heat", "salt"]:
+            if component in budgets_dict:
+                if "lambda" in budgets_dict[component]:
+                    self.component_dict[component] = budgets_dict[component]["lambda"]
+                elif "surface_lambda" in budgets_dict[component]:
+                    self.component_dict[component] = budgets_dict[component]["surface_lambda"]
+                else:
+                    self.component_dict[component] = None
+        h_name = None
+        if "mass" in budgets_dict:
+            if "thickness" in budgets_dict["mass"]:
+                h_name = budgets_dict["mass"]["thickness"]
+        
         super().__init__(
             grid,
-            t_name=budgets_dict["heat"]["lambda"],
-            s_name=budgets_dict["salt"]["lambda"],
-            h_name=budgets_dict["mass"]["thickness"],
+            t_name=self.component_dict["heat"],
+            s_name=self.component_dict["salt"],
+            h_name=h_name,
             teos10=teos10,
             cp=cp,
             rho_ref=rho_ref
         )
-        
-        self.component_dict = {
-            "heat": self.t_name,
-            "salt": self.s_name,
-        }
         
         self.lambdas_dict = {
             **self.component_dict,
@@ -192,7 +201,9 @@ class WaterMassTransformations(WaterMass):
             tend_arr = tend_arr*1000.
             
         scalar = self.ds[component_name]
-
+        if self.grid.axes['Z'].coords["center"] not in scalar.dims:
+            scalar = self.expand_surface_array_vertically(scalar, target_position="center")
+        
         n_zcoords = len([
             c for c in self.grid.axes['Z'].coords.values()
             if c in self.ds[process].dims
