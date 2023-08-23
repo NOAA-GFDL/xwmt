@@ -79,8 +79,15 @@ class WaterMass:
             coords_2d = {ax:self.grid.axes[ax].coords for ax in self.grid.axes.keys()}
             coords_2d["Z"] = {"center": "z_l", "outer": "z_i"} 
             metrics_2d = {k:vv.name for (k,v) in self.grid._metrics.items() for vv in v}
-            periodic_2d = [self.grid.axes[ax]._periodic for ax in self.grid.axes.keys() if self.grid.axes[ax]._periodic is not None]
-            self.grid = xgcm.Grid(self.ds, coords=coords_2d, metrics=metrics_2d, periodic=periodic_2d)
+            periodic_2d = False #[   ax for ax in self.grid.axes.keys()
+                          # if self.grid.axes[ax]._periodic is not None]
+            self.grid = xgcm.Grid(
+                self.ds,
+                coords=coords_2d,
+                metrics=metrics_2d,
+                periodic=periodic_2d,
+                autoparse_metadata=False
+            )
             setattr(self.grid, "Z_metrics", {
                 "center": self.ds["h"],
                 "outer": self.ds["h_i"]

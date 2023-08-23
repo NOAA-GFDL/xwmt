@@ -298,7 +298,7 @@ class WaterMassTransformations(WaterMass):
             for idx, tend in enumerate(self.component_dict.keys()):
                 if rhos[idx] is not None:
                     hlamdot[tend] = rhos[idx]*self.rho_ref
-                else:
+                elif rhos[idx] is None:
                     hlamdot[tend] = rhos[idx]
             lam = self.get_density(lambda_name)
         
@@ -323,7 +323,11 @@ class WaterMassTransformations(WaterMass):
         
         if mask is not None:
             if type(hlamdot) is dict:
-                hlamdot = {k:v.where(mask, 0.) if v is not None else None for k,v in hlamdot.items()}
+                hlamdot = {
+                    k:v.where(mask, 0.)
+                    if v is not None else None
+                    for k,v in hlamdot.items()
+                }
             else:
                 hlamdot = hlamdot.where(mask, 0.)
 
