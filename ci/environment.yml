@@ -15,3 +15,6 @@ dependencies:
   - pytest
   - xarray
   - xgcm==0.8.1
+  - xhistogram
+  - pip:
+    - git+https://github.com/hdrake/xbudget.git
