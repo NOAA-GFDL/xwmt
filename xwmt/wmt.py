@@ -1,7 +1,7 @@
 import copy
 import numpy as np
 import xarray as xr
-import gsw
+from xhistogram.xarray import histogram
 import warnings
 
 from xwmt.wm import WaterMass
@@ -22,6 +22,7 @@ class WaterMassTransformations(WaterMass):
         teos10=True,
         cp=3992.0,
         rho_ref=1035.0,
+        method="default"
         ):
         """
         Create a new watermass object from an input dataset.
@@ -41,6 +42,7 @@ class WaterMassTransformations(WaterMass):
             Value of reference potential density. Note: WaterMass is assumed to be Boussinesq.
         """
         
+        self.method = method
         self.component_dict = {}
         for component in ["heat", "salt"]:
             if component in budgets_dict:
@@ -311,7 +313,7 @@ class WaterMassTransformations(WaterMass):
         except NameError:
             return None, None
 
-    def transform_hlamdot(self, lambda_name, term, bins=None, mask=None):
+    def transform_hlamdot(self, lambda_name, term, bins=None, mask=None, integrate=False):
         """
         Lazily compute extensive tendencies and transform them into lambda space
         along the vertical ("Z") dimension.
@@ -320,6 +322,21 @@ class WaterMassTransformations(WaterMass):
         hlamdot, lam = self.calc_hlamdot_and_lambda(lambda_name, term)
         if hlamdot is None:
             return
+        
+        if integrate:
+            dA = self.grid.get_metric(lam, ['X', 'Y'])
+            if isinstance(hlamdot, xr.DataArray):
+                hlamdot *= dA
+            elif isinstance(hlamdot, dict):
+                for k,v in hlamdot.items():
+                    if hlamdot[k] is not None:
+                        hlamdot[k] *= dA
+
+        if self.method in ["default", "xhistogram"]:
+            if integrate:
+                dim = [self.grid.axes['X'].coords['center'], self.grid.axes['Y'].coords['center'], self.grid.axes['Z'].coords['center']]
+            else:
+                dim = [self.grid.axes['Z'].coords['center']]
         
         if mask is not None:
             if type(hlamdot) is dict:
@@ -337,7 +354,6 @@ class WaterMassTransformations(WaterMass):
         # Interpolate lambda to the cell interfaces
         lam_i = (
             self.grid.interp(lam, "Z", boundary="extend")
-            .chunk({self.grid.axes['Z'].coords['outer']: -1})
             .rename(lam.name)
         )
 
@@ -346,29 +362,57 @@ class WaterMassTransformations(WaterMass):
             for tend in self.component_dict.keys():
                 (component_name, process) = self.process_names(tend, term)
                 if hlamdot[tend] is not None:
-                    hlamdot_transformed.append(
-                        (
-                            self.grid.transform(
-                                hlamdot[tend],
-                                "Z",
-                                target=bins,
-                                target_data=lam_i,
-                                method="conservative",
+                    if ((self.method == "default") and integrate) or (self.method == "xhistogram"):
+                        hlamdot_transformed_component = histogram(
+                            lam,
+                            bins=[bins.values if isinstance(bins, xr.DataArray) else bins],
+                            dim=dim,
+                            weights=hlamdot[tend].fillna(0.),
+                            bin_dim_suffix="",
+                        )
+                    elif ((self.method == "default") and not integrate) or (self.method == "xgcm"):
+                        hlamdot_transformed_component = self.grid.transform(
+                            hlamdot[tend].fillna(0.),
+                            "Z",
+                            target=bins,
+                            target_data=lam_i,
+                            method="conservative",
+                        )
+                        if integrate:
+                            hlamdot_transformed_component = hlamdot_transformed_component.sum(
+                                [self.grid.axes['X'].coords['center'], self.grid.axes['Y'].coords['center']]
                             )
-                            / np.diff(bins)
-                        ).rename(f"{term}_{tend}")
+                    hlamdot_transformed.append(
+                        (hlamdot_transformed_component / np.diff(bins)).rename(f"{term}_{tend}")
                     )
-                        
+
             hlamdot_transformed = xr.merge(hlamdot_transformed)
         else:
             (component_name, process) = self.process_names(
                 "salt" if lambda_name == "salinity" else "heat", term
             )
-            hlamdot_transformed = (
-                self.grid.transform(
-                    hlamdot, "Z", target=bins, target_data=lam_i, method="conservative"
+            if ((self.method == "default") and integrate) or (self.method == "xhistogram"):
+                hlamdot_transformed = histogram(
+                    lam,
+                    bins=[bins.values if isinstance(bins, xr.DataArray) else bins],
+                    dim=dim,
+                    weights=hlamdot.fillna(0.),
+                    bin_dim_suffix="",
                 )
-                / np.diff(bins)
+            elif ((self.method == "default") and not integrate) or (self.method == "xgcm"):
+                hlamdot_transformed = self.grid.transform(
+                    hlamdot.fillna(0.),
+                    "Z",
+                    target=bins,
+                    target_data=lam_i,
+                    method="conservative"
+                )
+                if integrate:
+                    hlamdot_transformed = hlamdot_transformed.sum(
+                        [self.grid.axes['X'].coords['center'], self.grid.axes['Y'].coords['center']]
+                    )
+            hlamdot_transformed = (
+                hlamdot_transformed / np.diff(bins)
             ).rename(f"{term}")
         return hlamdot_transformed
 
@@ -387,17 +431,15 @@ class WaterMassTransformations(WaterMass):
                     wmts.append(wmt)
                 else:
                     print(f"Process '{term}' for component {lambda_name} is unavailable.")
-            return xr.merge(wmts)
-
-        hlamdot_transformed = self.transform_hlamdot(lambda_name, term, bins=bins, mask=mask)
-        if hlamdot_transformed is not None and len(hlamdot_transformed):
-            dA = self.grid.get_metric(hlamdot_transformed, ['X', 'Y'])
-            wmt = (hlamdot_transformed * dA).sum(dA.dims)
+            return xr.merge(wmts)            
+        
+        wmt = self.transform_hlamdot(lambda_name, term, bins=bins, mask=mask, integrate=True)
+        if wmt is not None and len(wmt):
             # rename dataarray only (not dataset)
             if isinstance(wmt, xr.DataArray):
-                return wmt.rename(hlamdot_transformed.name)
+                return wmt.rename(wmt.name)
             return wmt
-        return hlamdot_transformed
+        return wmt
 
     ### Helper function to groups terms based on density components (sum_components)
     ### and physical processes (group_processes)
