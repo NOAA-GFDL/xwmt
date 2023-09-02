@@ -77,15 +77,15 @@ class WaterMass:
             self.ds["h"] = xr.DataArray([1], dims=("z_l",))
             self.ds["h_i"] = xr.DataArray([0.5, 0.5], dims=("z_i",))
             coords_2d = {ax:self.grid.axes[ax].coords for ax in self.grid.axes.keys()}
-            coords_2d["Z"] = {"center": "z_l", "outer": "z_i"} 
+            coords_2d["Z"] = {"center": "z_l", "outer": "z_i"}
             metrics_2d = {k:vv.name for (k,v) in self.grid._metrics.items() for vv in v}
-            periodic_2d = False #[   ax for ax in self.grid.axes.keys()
-                          # if self.grid.axes[ax]._periodic is not None]
+            boundary_2d = {ax:self.grid.axes[ax]._boundary for ax in self.grid.axes.keys()}
+            boundary_2d["Z"] = "extend"
             self.grid = xgcm.Grid(
                 self.ds,
                 coords=coords_2d,
                 metrics=metrics_2d,
-                periodic=periodic_2d,
+                boundary=boundary_2d,
                 autoparse_metadata=False
             )
             setattr(self.grid, "Z_metrics", {

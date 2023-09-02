@@ -369,6 +369,7 @@ class WaterMassTransformations(WaterMass):
                             dim=dim,
                             weights=hlamdot[tend].fillna(0.),
                             bin_dim_suffix="",
+                            block_size=None # TEMPORARY FIX FOR https://github.com/xgcm/xhistogram/issues/16
                         )
                     elif ((self.method == "default") and not integrate) or (self.method == "xgcm"):
                         hlamdot_transformed_component = self.grid.transform(
@@ -398,6 +399,7 @@ class WaterMassTransformations(WaterMass):
                     dim=dim,
                     weights=hlamdot.fillna(0.),
                     bin_dim_suffix="",
+                    block_size=None # TEMPORARY FIX FOR https://github.com/xgcm/xhistogram/issues/16
                 )
             elif ((self.method == "default") and not integrate) or (self.method == "xgcm"):
                 hlamdot_transformed = self.grid.transform(
