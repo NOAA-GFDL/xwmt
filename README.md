@@ -3,5 +3,6 @@ Python package for water mass transformation analysis that leverages xarray func
 
 #### Installation instructions
 ```bash
+pip install git+https://github.com/hdrake/xbudget.git
 pip install git+https://github.com/hdrake/xwmt.git
 ```
