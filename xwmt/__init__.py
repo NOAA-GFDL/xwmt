@@ -1,4 +1,5 @@
 """ xwmt: xarray-friendly water mass transformation """
 
-from .swmt import swmt
+from .wm import WaterMass
+from .wmt import WaterMassTransformations
 from .version import __version__
