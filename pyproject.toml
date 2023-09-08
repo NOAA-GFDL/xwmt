@@ -9,19 +9,19 @@ description = "Water Mass Transformation Routines for xarray"
 keywords = [
     "oceanography",
     "ocean modeling",
-    "water mass transformation"
+    "water mass transformation",
 ]
 readme = "README.md"
 requires-python = ">=3.8"
 classifiers = [
-    "Development Status :: 3 - Alpha"
-    "Intended Audience :: Science/Research"
-    "Topic :: Scientific/Engineering"
-    "License :: OSI Approved :: MIT License"
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering",
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
-    "Operating System :: OS Independent"
+    "Operating System :: OS Independent",
 ]
 dependencies = [
     "gsw",
