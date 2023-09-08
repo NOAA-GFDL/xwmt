@@ -1,7 +1,6 @@
 name: testing
 channels:
   - conda-forge
-  - defaults
 dependencies:
   - black
   - gsw
@@ -14,7 +13,7 @@ dependencies:
   - python==3.10
   - pytest
   - xarray
-  - xgcm==0.8.1
   - xhistogram
   - pip:
+    - git+https://github.com/xgcm/xgcm.git@7492277de22ed1e677a6a7523b61b20643a98a77
     - git+https://github.com/hdrake/xbudget.git
