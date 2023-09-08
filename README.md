@@ -12,6 +12,13 @@ cd xwmt
 conda env create -f ci/environment.yml
 conda activate testing
 pip install -e .
+```
+You can verify that the package was properly installed by confirming it passes all of the tests with:
+```bash
+pytest
+```
+You can launch a Jupyterlab instance using this environment with:
+```bash
 python -m ipykernel install --user --name xwmt --display-name "xwmt"
 jupyter-lab
 ```
