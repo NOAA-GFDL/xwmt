@@ -16,4 +16,4 @@ dependencies:
   - xhistogram
   - pip:
     - git+https://github.com/xgcm/xgcm.git@7492277de22ed1e677a6a7523b61b20643a98a77
-    - git+https://github.com/hdrake/xbudget.git
+    - git+https://github.com/hdrake/xbudget.git@main
