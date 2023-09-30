@@ -5,10 +5,7 @@ from xhistogram.xarray import histogram
 import warnings
 
 from xwmt.wm import WaterMass
-from xwmt.compute import (
-    calc_hlamdot_tendency,
-    bin_define,
-)
+from xwmt.compute import calc_hlamdot_tendency
 
 class WaterMassTransformations(WaterMass):
     """
@@ -22,7 +19,8 @@ class WaterMassTransformations(WaterMass):
         teos10=True,
         cp=3992.0,
         rho_ref=1035.0,
-        method="default"
+        method="default",
+        rebin=False
         ):
         """
         Create a new watermass object from an input dataset.
@@ -43,6 +41,7 @@ class WaterMassTransformations(WaterMass):
         """
         
         self.method = method
+        self.rebin = rebin
         self.component_dict = {}
         for component in ["heat", "salt"]:
             if component in budgets_dict:
@@ -52,6 +51,7 @@ class WaterMassTransformations(WaterMass):
                     self.component_dict[component] = budgets_dict[component]["surface_lambda"]
                 else:
                     self.component_dict[component] = None
+
         h_name = None
         if "mass" in budgets_dict:
             if "thickness" in budgets_dict["mass"]:
@@ -166,9 +166,9 @@ class WaterMassTransformations(WaterMass):
                 p1 = self.processes_heat_dict.get(process, None)
                 p2 = self.processes_salt_dict.get(process, None)
                 p3 = self.processes_mass_dict.get(process, None)
-                if (((p1 is None) or (p1 is not None and p1 in self.ds)) and
-                    ((p2 is None) or (p2 is not None and p2 in self.ds)) and
-                    ((p3 is None) or (p3 is not None and p3 in self.ds))
+                if (((p1 is None) or (p1 is not None and p1 in self.grid._ds)) and
+                    ((p2 is None) or (p2 is not None and p2 in self.grid._ds)) and
+                    ((p3 is None) or (p3 is not None and p3 in self.grid._ds))
                 ):
                     _processes.append(process)
             return _processes
@@ -193,31 +193,31 @@ class WaterMassTransformations(WaterMass):
         
         (component_name, process) = self.process_names(component, term)
         
-        if process is None or process not in self.ds:
+        if process is None or process not in self.grid._ds:
             return
 
-        tend_arr = self.ds[process]
+        tend_arr = self.grid._ds[process]
         
         # Multiply salt tendency by 1000 to convert to g/m^2/s
         if component=="salt":
             tend_arr = tend_arr*1000.
             
-        scalar = self.ds[component_name]
+        scalar = self.grid._ds[component_name]
         if self.grid.axes['Z'].coords["center"] not in scalar.dims:
             scalar = self.expand_surface_array_vertically(scalar, target_position="center")
         
         n_zcoords = len([
             c for c in self.grid.axes['Z'].coords.values()
-            if c in self.ds[process].dims
+            if c in self.grid._ds[process].dims
         ])
         
         if n_zcoords == 0:
             tend_arr = self.expand_surface_array_vertically(tend_arr)
             tend_dict = {"interfacial_flux": tend_arr}
         elif n_zcoords > 0:
-            if (self.grid.axes['Z'].coords["outer"] in self.ds[process].dims):
+            if (self.grid.axes['Z'].coords["outer"] in self.grid._ds[process].dims):
                 tend_dict = {"interfacial_flux": tend_arr}
-            elif (self.grid.axes['Z'].coords["center"] in self.ds[process].dims):
+            elif (self.grid.axes['Z'].coords["center"] in self.grid._ds[process].dims):
                 tend_dict = {"layer_integrated_tendency": tend_arr}
         
         return {"scalar": scalar, **tend_dict}
@@ -237,7 +237,7 @@ class WaterMassTransformations(WaterMass):
             The two distinct components contributing to the overall density tendency.
         """
 
-        if "alpha" not in self.ds or "beta" not in self.ds:
+        if "alpha" not in self.grid._ds or "beta" not in self.grid._ds:
             self.get_density()
 
         # Either heat or salt tendency/flux may not be used
@@ -247,13 +247,13 @@ class WaterMassTransformations(WaterMass):
         if datadict is not None:
             heat_tend = calc_hlamdot_tendency(self.grid, datadict)
             # Density tendency due to heat flux (kg/s/m^2)
-            rho_tend_heat = -(self.ds.alpha / self.cp) * heat_tend
+            rho_tend_heat = -(self.grid._ds.alpha / self.cp) * heat_tend
 
         datadict = self.datadict("salt", term)
         if datadict is not None:
             salt_tend = calc_hlamdot_tendency(self.grid, datadict)
             # Density tendency due to salt/salinity (kg/s/m^2)
-            rho_tend_salt = self.ds.beta * salt_tend
+            rho_tend_salt = self.grid._ds.beta * salt_tend
 
         return rho_tend_heat, rho_tend_salt
 
@@ -272,6 +272,9 @@ class WaterMassTransformations(WaterMass):
         ----------
         hlamdot, lam : xr.DataArray, xr.DataArray
         """
+        
+        lam_var = self.get_lambda_var(lambda_name)
+        prebinned = all([(c in self.grid.axes['Z'].coords.values()) for c in [f"{lam_var}_l", f"{lam_var}_i"]])
 
         # Get layer-integrated potential temperature tendency
         # from tendency of heat (in W/m^2), lambda = temperature
@@ -279,7 +282,7 @@ class WaterMassTransformations(WaterMass):
             datadict = self.datadict("heat", term)
             if datadict is not None:
                 hlamdot = calc_hlamdot_tendency(self.grid, datadict) / self.cp
-                lam = datadict["scalar"]
+                lam = datadict["scalar"] if not prebinned else self.grid._ds[f"{lam_var}_l"]
 
         # Get layer-integrated salinity tendency
         # from tendency of salt (in g/s/m^2), lambda = salinity
@@ -288,7 +291,7 @@ class WaterMassTransformations(WaterMass):
             if datadict is not None:
                 hlamdot = calc_hlamdot_tendency(self.grid, datadict)
                 # TODO: Accurately define salinity field (What does this mean? - HFD)
-                lam = datadict["scalar"]
+                lam = datadict["scalar"] if not prebinned else self.grid._ds[f"{lam_var}_l"]
 
         # Get layer-integrated potential density tendencies (in kg/s/m^2)
         # from heat and salt, lambda = density
@@ -302,7 +305,13 @@ class WaterMassTransformations(WaterMass):
                     hlamdot[tend] = rhos[idx]*self.rho_ref
                 elif rhos[idx] is None:
                     hlamdot[tend] = rhos[idx]
-            lam = self.get_density(lambda_name)
+                    
+            if prebinned and not(self.rebin):
+                lam = self.grid._ds[f"{lam_var}_l"]
+            elif lam_var in self.grid._ds:
+                lam = self.grid._ds[lam_var]
+            else:
+                lam = self.get_density(lambda_name)
         
         else:
             raise ValueError(f"{lambda_name} is not a supported lambda.")
@@ -313,7 +322,7 @@ class WaterMassTransformations(WaterMass):
         except NameError:
             return None, None
 
-    def transform_hlamdot(self, lambda_name, term, bins=None, mask=None, integrate=False):
+    def transform_hlamdot_term(self, lambda_name, term, bins=None, mask=None, integrate=False):
         """
         Lazily compute extensive tendencies and transform them into lambda space
         along the vertical ("Z") dimension.
@@ -324,20 +333,23 @@ class WaterMassTransformations(WaterMass):
             return
         
         if integrate:
-            dA = self.grid.get_metric(lam, ['X', 'Y'])
             if isinstance(hlamdot, xr.DataArray):
-                hlamdot *= dA
+                hlamdot *= self.grid.get_metric(hlamdot, ['X', 'Y'])
             elif isinstance(hlamdot, dict):
                 for k,v in hlamdot.items():
                     if hlamdot[k] is not None:
-                        hlamdot[k] *= dA
+                        hlamdot[k] *= self.grid.get_metric(hlamdot[k], ['X', 'Y'])
 
         if self.method in ["default", "xhistogram"]:
             if integrate:
-                dim = [self.grid.axes['X'].coords['center'], self.grid.axes['Y'].coords['center'], self.grid.axes['Z'].coords['center']]
+                dim = [
+                    self.grid.axes['X'].coords['center'],
+                    self.grid.axes['Y'].coords['center'],
+                    self.grid.axes['Z'].coords['center']
+                ]
             else:
                 dim = [self.grid.axes['Z'].coords['center']]
-        
+
         if mask is not None:
             if type(hlamdot) is dict:
                 hlamdot = {
@@ -349,42 +361,58 @@ class WaterMassTransformations(WaterMass):
                 hlamdot = hlamdot.where(mask, 0.)
 
         if bins is None:
-            bins = self.bin_percentile(lam, surface=True)
-
-        # Interpolate lambda to the cell interfaces
-        lam_i = (
-            self.grid.interp(lam, "Z", boundary="extend")
-            .rename(lam.name)
-        )
+            bins = self.infer_bins(lam)
+            
+        # If lambda is already a vertical coordinate, no need to use the 3D lambda for transformations
+        lam_var = self.get_lambda_var(lambda_name)
+        prebinned = all([(c in self.grid.axes['Z'].coords.values()) for c in [f"{lam_var}_l", f"{lam_var}_i"]])
+        if prebinned and not(self.rebin):
+            onedimensional_target = True
+            lam = lam.rename({lam.name: lam_var}).rename(lam_var)
+            lam_i = self.grid._ds[f"{lam_var}_i"]
+            self.method = "xgcm"
+        else:
+            onedimensional_target = False
+            lam_i = (
+                self.grid.interp(lam, "Z", boundary="extend")
+                .rename(f"{lam.name}_i")
+            )
 
         if lambda_name in self.lambdas("density"):
             hlamdot_transformed = []
             for tend in self.component_dict.keys():
                 (component_name, process) = self.process_names(tend, term)
                 if hlamdot[tend] is not None:
-                    if ((self.method == "default") and integrate) or (self.method == "xhistogram"):
+                    bin_bounds = bins.values if isinstance(bins, xr.DataArray) else bins
+                    # xhistogram cases
+                    if (((self.method == "default") and integrate) or
+                        (self.method == "xhistogram")):
                         hlamdot_transformed_component = histogram(
                             lam,
-                            bins=[bins.values if isinstance(bins, xr.DataArray) else bins],
+                            bins=[bin_bounds],
                             dim=dim,
                             weights=hlamdot[tend].fillna(0.),
                             bin_dim_suffix="",
-                            block_size=None # TEMPORARY FIX FOR https://github.com/xgcm/xhistogram/issues/16
-                        )
-                    elif ((self.method == "default") and not integrate) or (self.method == "xgcm"):
+                            # TEMPORARY FIX FOR https://github.com/xgcm/xhistogram/issues/16
+                            block_size=None
+                        ).rename({lam.name:f"{lam.name}_l_target"})
+                    # xgcm cases
+                    elif (((self.method == "default") and not integrate) or
+                          (self.method == "xgcm")):
                         hlamdot_transformed_component = self.grid.transform(
                             hlamdot[tend].fillna(0.),
                             "Z",
-                            target=bins,
+                            target=bin_bounds,
                             target_data=lam_i,
                             method="conservative",
-                        )
+                        ).rename({lam_i.name: f"{lam.name}_l_target"})
                         if integrate:
                             hlamdot_transformed_component = hlamdot_transformed_component.sum(
-                                [self.grid.axes['X'].coords['center'], self.grid.axes['Y'].coords['center']]
+                                [self.grid.axes['X'].coords['center'],
+                                 self.grid.axes['Y'].coords['center']]
                             )
                     hlamdot_transformed.append(
-                        (hlamdot_transformed_component / np.diff(bins)).rename(f"{term}_{tend}")
+                        (hlamdot_transformed_component / np.diff(bin_bounds)).rename(f"{term}_{tend}")
                     )
 
             hlamdot_transformed = xr.merge(hlamdot_transformed)
@@ -392,56 +420,61 @@ class WaterMassTransformations(WaterMass):
             (component_name, process) = self.process_names(
                 "salt" if lambda_name == "salinity" else "heat", term
             )
-            if ((self.method == "default") and integrate) or (self.method == "xhistogram"):
+            bin_bounds = bins.values if isinstance(bins, xr.DataArray) else bins
+            if (((self.method == "default") and integrate) or
+                (self.method == "xhistogram")):
                 hlamdot_transformed = histogram(
                     lam,
-                    bins=[bins.values if isinstance(bins, xr.DataArray) else bins],
+                    bins=[bin_bounds],
                     dim=dim,
                     weights=hlamdot.fillna(0.),
                     bin_dim_suffix="",
-                    block_size=None # TEMPORARY FIX FOR https://github.com/xgcm/xhistogram/issues/16
-                )
-            elif ((self.method == "default") and not integrate) or (self.method == "xgcm"):
+                    # TEMPORARY FIX FOR https://github.com/xgcm/xhistogram/issues/16
+                    block_size=None
+                ).rename({lam.name:f"{lam.name}_l_target"})
+            elif (((self.method == "default") and not integrate) or
+                  (self.method == "xgcm")):
                 hlamdot_transformed = self.grid.transform(
                     hlamdot.fillna(0.),
                     "Z",
-                    target=bins,
+                    target=bin_bounds,
                     target_data=lam_i,
                     method="conservative"
-                )
+                ).rename({lam_i.name: f"{lam.name}_l_target"})
                 if integrate:
                     hlamdot_transformed = hlamdot_transformed.sum(
-                        [self.grid.axes['X'].coords['center'], self.grid.axes['Y'].coords['center']]
+                        [self.grid.axes['X'].coords['center'],
+                         self.grid.axes['Y'].coords['center']]
                     )
             hlamdot_transformed = (
-                hlamdot_transformed / np.diff(bins)
+                hlamdot_transformed / np.diff(bin_bounds)
             ).rename(f"{term}")
         return hlamdot_transformed
 
-    def transform_hlamdot_and_integrate(self, lambda_name, term=None, bins=None, mask=None):
+    def transform_hlamdot(self, lambda_name, term=None, bins=None, mask=None, integrate=True):
         """
         Lazily compute extensive tendencies, transform them into lambda space
         along the vertical ("Z") dimension, and integrate along the
         horizontal dimensions ("X", "Y").
         """
-        # If term is not given, use all available process terms
-        if term is None:
-            wmts = []
-            for term in self.available_processes():
-                wmt = self.transform_hlamdot_and_integrate(lambda_name, term, bins, mask)
-                if wmt is not None:
-                    wmts.append(wmt)
-                else:
-                    print(f"Process '{term}' for component {lambda_name} is unavailable.")
-            return xr.merge(wmts)            
         
-        wmt = self.transform_hlamdot(lambda_name, term, bins=bins, mask=mask, integrate=True)
-        if wmt is not None and len(wmt):
-            # rename dataarray only (not dataset)
-            if isinstance(wmt, xr.DataArray):
-                return wmt.rename(wmt.name)
-            return wmt
-        return wmt
+        if isinstance(term, str):
+            terms = [term]
+        elif isinstance(term, list):
+            terms = term
+        elif term is None:
+            terms = self.available_processes()
+        else:
+            return
+            
+        wmts = []
+        for term in terms:
+            wmt = self.transform_hlamdot_term(lambda_name, term=term, bins=bins, mask=mask, integrate=integrate)
+            if wmt is not None:
+                wmts.append(wmt)
+            else:
+                print(f"Process '{term}' for component {lambda_name} is unavailable.")
+        return xr.merge(wmts)
 
     ### Helper function to groups terms based on density components (sum_components)
     ### and physical processes (group_processes)
@@ -511,31 +544,26 @@ class WaterMassTransformations(WaterMass):
                 )
         return hlamdot
 
-    def map_transformations(self, lambda_name, term=None, sum_components=True, group_processes=False, **kwargs):
+    def map_transformations(self, lambda_name, *args, **kwargs):
         """
         Wrapper function for transform_hlamdot() to group terms based
         on tendency terms (heat, salt) and processes.
         """
-        # If term is not given, use all available process terms
-        if term is None:
-            _local_transformations = []
-            for term in self.available_processes(False):
-                _local_transformation = self.map_transformations(lambda_name, term, sum_components=False, group_processes=False, **kwargs)
-                if _local_transformation is not None:
-                    _local_transformations.append(_local_transformation)
-            local_transformations = xr.merge(_local_transformations)
-        else:
-            # If term is given
-            local_transformations = self.transform_hlamdot(lambda_name, term, **kwargs)
-            if isinstance(local_transformations, xr.DataArray):
-                local_transformations = local_transformations.to_dataset()
+        
+        # Extract default function args
+        group_processes = kwargs.pop("group_processes", False)
+        sum_components = kwargs.pop("sum_components", True)
+        
+        # call the base function
+        transformations = self.transform_hlamdot(lambda_name, integrate=False, **kwargs)
 
+        # process this function arguments
         if sum_components:
-            local_transformations = self._sum_components(local_transformations, group_processes=group_processes)
+            transformations = self._sum_components(transformations, group_processes=group_processes)
         if group_processes:
-            local_transformations = self._group_processes(local_transformations)
-
-        return local_transformations
+            transformations = self._group_processes(transformations)
+            
+        return transformations
 
     def integrate_transformations(self, lambda_name, *args, **kwargs):
         """
@@ -565,8 +593,9 @@ class WaterMassTransformations(WaterMass):
         # Extract default function args
         group_processes = kwargs.pop("group_processes", False)
         sum_components = kwargs.pop("sum_components", True)
+        
         # call the base function
-        transformations = self.transform_hlamdot_and_integrate(lambda_name, *args, **kwargs)
+        transformations = self.transform_hlamdot(lambda_name, integrate=True, **kwargs)
 
         # process this function arguments
         if sum_components:

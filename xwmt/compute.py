@@ -35,7 +35,3 @@ def calc_hlamdot_tendency(grid, datadict):
             datadict["interfacial_flux"],
             "Z"
         )
-
-def bin_define(lmin, lmax, delta_l):
-    """Specify the range and widths of the lambda bins"""
-    return np.arange(lmin - delta_l / 2.0, lmax + delta_l / 2.0, delta_l)
