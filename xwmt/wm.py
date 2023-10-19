@@ -38,7 +38,18 @@ class WaterMass:
         rho_ref: float
             Value of reference potential density. Note: WaterMass is assumed to be Boussinesq.
         """
-        self.grid = grid
+        # Grid copy
+        self.grid = xgcm.Grid(
+            grid._ds.copy(),
+            coords={
+                **{ax:grid.axes[ax].coords for ax in grid.axes.keys()},
+            },
+            metrics={k:vv.name for (k,v) in grid._metrics.items() for vv in v},
+            boundary={
+                **{ax:grid.axes[ax]._boundary for ax in grid.axes.keys()},
+            },
+            autoparse_metadata=False
+        )
         self.t_name = t_name
         self.s_name = s_name
         self.h_name = h_name
@@ -46,7 +57,9 @@ class WaterMass:
         self.cp = cp
         self.rho_ref = rho_ref
         
-        if self.h_name in self.grid._ds:
+        if "Z_metrics" in vars(self.grid):
+            pass
+        elif self.h_name in self.grid._ds:
             # Conservatively interpolate thickness to cell interfaces, needed to
             # estimate depth of layer centers and compute surface flux divergences
             Z_center_extended = np.concatenate((
@@ -286,3 +299,22 @@ class WaterMass:
         num = (da * area * self.grid._ds[landmask_name]).sum(dim=x_name)
         denom = (area * self.grid._ds[landmask_name]).sum(dim=x_name)
         return num / denom
+    
+def add_gridcoords(grid, coords, boundary):
+    new_grid = xgcm.Grid(
+        grid._ds,
+        coords={
+            **{ax:grid.axes[ax].coords for ax in grid.axes.keys()},
+            **coords
+        },
+        metrics={k:vv.name for (k,v) in grid._metrics.items() for vv in v},
+        boundary={
+            **{ax:grid.axes[ax]._boundary for ax in grid.axes.keys()},
+            **boundary
+        },
+        autoparse_metadata=False
+    )
+    if "Z_metrics" in vars(grid):
+        new_grid.Z_metrics = grid.Z_metrics
+
+    return new_grid
