@@ -134,10 +134,30 @@ class WaterMass:
         if (
             "alpha" not in self.grid._ds or "beta" not in self.grid._ds or self.teos10
         ) and "p" not in vars(self):
-            self.grid._ds['z'] = self.grid.cumsum(self.grid.Z_metrics["outer"], "Z")
+            self.grid._ds['z'] = -self.grid.cumsum(self.grid.Z_metrics["outer"], "Z")
             self.grid._ds['p'] = xr.apply_ufunc(
-                gsw.p_from_z, -self.grid._ds.z, self.grid._ds.lat, 0, 0, dask="parallelized"
+                gsw.p_from_z, self.grid._ds.z, self.grid._ds.lat, 0, 0, dask="parallelized"
             )
+
+        if "sigma" in density_name:
+            z_ref = density_name.replace("sigma", "")
+            try:
+                z_ref = -float(z_ref)*1000
+            except:
+                print("'density_name' is not of form 'sigmaX' where 'X' is a number.")
+            
+            pref = xr.apply_ufunc(
+                gsw.p_from_z, z_ref, self.grid._ds.lat, 0, 0, dask="parallelized"
+            )
+        else:
+            # default to in-situ elevation and pressure
+            z_ref = self.grid._ds.z
+            p_ref = self.grid._ds.p
+        
+        # While prognostic temperature and salinity in MOM6 should be interpreted
+        # as conservative temperature and absolute salinity (following McDougall
+        # et al. 2021), models such as MOM6 convert these into potential temperature
+        # and practical salinity before being posted as `thetao` and `so` diagnostics.
         if self.teos10 and "sa" not in self.grid._ds:
             self.grid._ds['sa'] = xr.apply_ufunc(
                 gsw.SA_from_SP,
@@ -159,16 +179,16 @@ class WaterMass:
             self.grid._ds['sa'] = self.grid._ds[self.s_name]
             self.grid._ds['ct'] = self.grid._ds[self.t_name]
 
-        # Calculate thermal expansion coefficient alpha (1/K)
+        # Calculate thermal expansion coefficient alpha (1/K) at reference pressure
         if "alpha" not in self.grid._ds:
             self.grid._ds['alpha'] = xr.apply_ufunc(
-                gsw.alpha, self.grid._ds.sa, self.grid._ds.ct, self.grid._ds.p, dask="parallelized"
+                gsw.alpha, self.grid._ds.sa, self.grid._ds.ct, p_ref, dask="parallelized"
             )
 
-        # Calculate the haline contraction coefficient beta (kg/g)
+        # Calculate the haline contraction coefficient beta (kg/g) at reference pressure
         if "beta" not in self.grid._ds:
             self.grid._ds['beta'] = xr.apply_ufunc(
-                gsw.beta, self.grid._ds.sa, self.grid._ds.ct, self.grid._ds.p, dask="parallelized"
+                gsw.beta, self.grid._ds.sa, self.grid._ds.ct, p_ref, dask="parallelized"
             )
 
         # Calculate potential density (kg/m^3)
@@ -179,7 +199,10 @@ class WaterMass:
             if density_name not in self.grid._ds:
                 if ("sigma" in density_name):
                     self.grid._ds[density_name] = xr.apply_ufunc(
-                        getattr(gsw, density_name), self.grid._ds.sa, self.grid._ds.ct, dask="parallelized"
+                        getattr(gsw, density_name),
+                        self.grid._ds.sa,
+                        self.grid._ds.ct,
+                        dask="parallelized"
                     ).rename(density_name)
                     
                 else:
