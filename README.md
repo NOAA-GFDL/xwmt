@@ -10,7 +10,8 @@ Quick Start Guide
 git clone git@github.com:hdrake/xwmt.git
 cd xwmt
 conda env create -f ci/environment.yml
-conda activate testing
+conda rename -n testing xwmt
+conda activate xwmt
 pip install -e .
 ```
 You can verify that the package was properly installed by confirming it passes all of the tests with:
