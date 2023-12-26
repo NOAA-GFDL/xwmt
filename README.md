@@ -29,7 +29,7 @@ jupyter-lab
 git clone git@github.com:hdrake/xwmt.git
 cd xwmt
 conda create --name xwmt
-conda install -c conda-forge python=3.10 jupyterlab matplotlib pip
+conda install -c conda-forge python=3.10 jupyterlab matplotlib netcdf4 scipy pip
 pip install -e .
 ```
 
