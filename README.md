@@ -14,7 +14,7 @@ cd xwmt
 conda env create -f ci/environment.yml
 conda rename -n testing xwmt
 conda activate xwmt
-conda install -c conda-forge jupyterlab matplotlib
+conda install -c conda-forge jupyterlab matplotlib nc-time-axis
 pip install -e .
 ```
 You can verify that the package was properly installed by confirming it passes all of the tests with:
