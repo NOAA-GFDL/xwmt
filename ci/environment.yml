@@ -6,7 +6,6 @@ dependencies:
   - black
   - gsw
   - netcdf4
-  - nc-time-axis
   - numpy
   - scipy
   - numba
