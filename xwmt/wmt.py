@@ -237,9 +237,6 @@ class WaterMassTransformations(WaterMass):
             The two distinct components contributing to the overall density tendency.
         """
 
-        if "alpha" not in self.grid._ds or "beta" not in self.grid._ds:
-            self.get_density()
-
         # Either heat or salt tendency/flux may not be used
         rho_tend_heat, rho_tend_salt = None, None
 
@@ -274,7 +271,10 @@ class WaterMassTransformations(WaterMass):
         """
         
         lam_var = self.get_lambda_var(lambda_name)
-        prebinned = all([(c in self.grid.axes['Z'].coords.values()) for c in [f"{lam_var}_l", f"{lam_var}_i"]])
+        prebinned = all([
+            (c in self.grid.axes['Z'].coords.values())
+            for c in [f"{lam_var}_l", f"{lam_var}_i"]
+        ])
 
         # Get layer-integrated potential temperature tendency
         # from tendency of heat (in W/m^2), lambda = temperature
@@ -284,13 +284,12 @@ class WaterMassTransformations(WaterMass):
                 hlamdot = calc_hlamdot_tendency(self.grid, datadict) / self.cp
                 lam = datadict["scalar"] if not prebinned else self.grid._ds[f"{lam_var}_l"]
 
-        # Get layer-integrated salinity tendency
+        # Get layer-integrated practical salinity tendency
         # from tendency of salt (in g/s/m^2), lambda = salinity
         elif lambda_name == "salt":
             datadict = self.datadict("salt", term)
             if datadict is not None:
                 hlamdot = calc_hlamdot_tendency(self.grid, datadict)
-                # TODO: Accurately define salinity field (What does this mean? - HFD)
                 lam = datadict["scalar"] if not prebinned else self.grid._ds[f"{lam_var}_l"]
 
         # Get layer-integrated potential density tendencies (in kg/s/m^2)
@@ -298,6 +297,7 @@ class WaterMassTransformations(WaterMass):
         # Here we want to output 2 separate components of the transformation rates:
         # (1) transformation due to heat tend, (2) transformation due to salt tend
         elif lambda_name in self.lambdas("density"):
+            lam = self.get_density(lambda_name)
             rhos = self.rho_tend(term)
             hlamdot = {}
             for idx, tend in enumerate(self.component_dict.keys()):
@@ -310,8 +310,6 @@ class WaterMassTransformations(WaterMass):
                 lam = self.grid._ds[f"{lam_var}_l"]
             elif lam_var in self.grid._ds:
                 lam = self.grid._ds[lam_var]
-            else:
-                lam = self.get_density(lambda_name)
         
         else:
             raise ValueError(f"{lambda_name} is not a supported lambda.")
