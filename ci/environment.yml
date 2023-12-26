@@ -2,16 +2,17 @@ name: testing
 channels:
   - conda-forge
 dependencies:
+  - python==3.10
   - black
   - gsw
   - netcdf4
+  - nc-time-axis
   - numpy
   - scipy
   - numba
   - pandas
   - pip
   - pylint
-  - python==3.10
   - pytest
   - xarray
   - xhistogram
