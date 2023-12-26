@@ -6,6 +6,7 @@ Quick Start Guide
 -----------------
 
 **Installing from scratch using `conda`**
+
 This is the recommended mode of installation for developers.
 ```bash
 git clone git@github.com:hdrake/xwmt.git
