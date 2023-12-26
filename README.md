@@ -24,6 +24,15 @@ python -m ipykernel install --user --name xwmt --display-name "xwmt"
 jupyter-lab
 ```
 
+**Recommended development environment**
+```bash
+git clone git@github.com:hdrake/xwmt.git
+cd xwmt
+conda create --name xwmt
+conda install -c python=3.10 conda-forge jupyterlab matplotlib pip
+pip install -e .
+```
+
 **Minimal installation within an existing environment**
 ```bash
 pip install git+https://github.com/hdrake/xwmt.git@main
