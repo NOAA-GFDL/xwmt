@@ -146,7 +146,7 @@ class WaterMass:
             except:
                 print("'density_name' is not of form 'sigmaX' where 'X' is a number.")
             
-            pref = xr.apply_ufunc(
+            p_ref = xr.apply_ufunc(
                 gsw.p_from_z, z_ref, self.grid._ds.lat, 0, 0, dask="parallelized"
             )
         else:
