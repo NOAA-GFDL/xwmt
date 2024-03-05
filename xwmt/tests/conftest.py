@@ -65,7 +65,7 @@ class Helpers:
 
         wmt = xwmt.WaterMassTransformations(grid, budget_dict, cp=1., rho_ref=1., method="xgcm")
         T = wmt.integrate_transformations("heat", bins=bins, sum_components=False)
-        T = T.assign_coords({'temperature_i': xr.DataArray(bins, dims=("temperature_i",))})
+        T = T.assign_coords({'temperature_i_target': xr.DataArray(bins, dims=("temperature_i_target",))})
         return T
     
     def mean_absolute_relative_errors(self, wmt_xwmt, wmt_local_exact, wmt_layer_exact):
@@ -76,11 +76,11 @@ class Helpers:
         return (
             absolute_relative_errors(
                 wmt_xwmt['tendency'],
-                wmt_layer_exact_method(wmt_xwmt.temperature_i.values)
+                wmt_layer_exact_method(wmt_xwmt.temperature_i_target.values)
             ),
             absolute_relative_errors(
                 wmt_xwmt['tendency'],
-                wmt_local_exact_method(wmt_xwmt.temperature.values)
+                wmt_local_exact_method(wmt_xwmt.temperature_l_target.values)
             )
         )
 

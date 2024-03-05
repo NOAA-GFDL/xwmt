@@ -69,6 +69,7 @@ class WaterMass:
             ))
             with warnings.catch_warnings():
                 warnings.simplefilter(action='ignore', category=FutureWarning)
+                time_attrs = self.grid._ds.time.attrs.copy()
                 self.grid._ds[f'{h_name}_i'] = self.grid.transform(
                     self.grid._ds[h_name].fillna(0.),
                     "Z",
@@ -82,6 +83,7 @@ class WaterMass:
                 "center": self.grid._ds[h_name],
                 "outer": self.grid._ds[f'{h_name}_i']
             })
+            self.grid._ds.time.attrs = time_attrs # For some reason these are not preserved by default
         elif "Z" not in self.grid.axes:
             self.grid._ds["z_l"] = xr.DataArray([0.5], dims=("z_l",))
             self.grid._ds["z_i"] = xr.DataArray([0, 1.], dims=("z_i",))
@@ -103,8 +105,7 @@ class WaterMass:
                 "center": self.grid._ds["h"],
                 "outer": self.grid._ds["h_i"]
             })
-            self.h_name = "h"
-            
+            self.h_name = "h"            
         
     def get_density(self, density_name=None, add_to_dataset=True):
         """
