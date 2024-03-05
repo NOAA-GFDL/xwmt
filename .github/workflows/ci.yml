@@ -19,7 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         #python-version: [3.7, 3.8, 3.9]
-        python-version: [3.9]
+        python-version: [3.10]
 
     steps:
       - name: Cancel previous runs
@@ -46,9 +46,6 @@ jobs:
         run: |
           conda env list
           conda list
-      - name: Download test data
-        run: |
-          curl -o xwmt_test_data.nc ftp://ftp.gfdl.noaa.gov/perm/John.Krasting/xwmt/xwmt_test_data.20220810.nc
       - name: Test with pytest
         run: |
           pytest
