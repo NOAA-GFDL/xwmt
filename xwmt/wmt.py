@@ -56,7 +56,7 @@ class WaterMassTransformations(WaterMass):
         if "mass" in budgets_dict:
             if "thickness" in budgets_dict["mass"]:
                 h_name = budgets_dict["mass"]["thickness"]
-        
+                
         super().__init__(
             grid,
             t_name=self.component_dict["heat"],
@@ -329,14 +329,6 @@ class WaterMassTransformations(WaterMass):
         hlamdot, lam = self.calc_hlamdot_and_lambda(lambda_name, term)
         if hlamdot is None:
             return
-        
-        if integrate:
-            if isinstance(hlamdot, xr.DataArray):
-                hlamdot *= self.grid.get_metric(hlamdot, ['X', 'Y'])
-            elif isinstance(hlamdot, dict):
-                for k,v in hlamdot.items():
-                    if hlamdot[k] is not None:
-                        hlamdot[k] *= self.grid.get_metric(hlamdot[k], ['X', 'Y'])
 
         if self.method in ["default", "xhistogram"]:
             if integrate:
