@@ -17,6 +17,8 @@ class WaterMass:
         teos10=True,
         cp=3992.0,
         rho_ref=1035.0,
+        t_var="conservative",
+        s_var="absolute",
         ):
         """
         Create a new watermass object from an input dataset.
@@ -26,9 +28,9 @@ class WaterMass:
         grid: xgcm.Grid
             Contains information about ocean model grid coordinates, metrics, and data variables.
         t_name: str
-            Name of potential temperature variable [in degrees Celsius] in ds.
+            Name of conservative temperature variable [in degrees Celsius] in ds.
         s_name: str
-            Name of practical salinity variable [in psu] in ds.
+            Name of absolute salinity variable [in g/kg] in ds.
         h_name: str
             Name of thickness variable [in m] in ds.
         teos10 : boolean, optional
@@ -37,6 +39,10 @@ class WaterMass:
             Value of specific heat capacity.
         rho_ref: float
             Value of reference potential density. Note: WaterMass is assumed to be Boussinesq.
+        t_var: str
+            Supported temperature variable options are "conservative" and "potential"
+        s_var: str
+            Supported salinity variable options are "absolute" and "practical"
         """
         # Grid copy
         self.grid = xgcm.Grid(
@@ -51,7 +57,9 @@ class WaterMass:
             autoparse_metadata=False
         )
         self.t_name = t_name
+        self.t_var = t_var
         self.s_name = s_name
+        self.s_var = s_var
         self.h_name = h_name
         self.teos10 = teos10
         self.cp = cp
@@ -107,7 +115,8 @@ class WaterMass:
                 "center": self.grid._ds["h"],
                 "outer": self.grid._ds["h_i"]
             })
-            self.h_name = "h"            
+            self.h_name = "h"
+        self.grid._ds['z'] = -self.grid.cumsum(self.grid.Z_metrics["outer"], "Z")
         
     def get_density(self, density_name=None, add_to_dataset=True):
         """
@@ -137,7 +146,6 @@ class WaterMass:
         if (
             "alpha" not in self.grid._ds or "beta" not in self.grid._ds or self.teos10
         ) and "p" not in vars(self):
-            self.grid._ds['z'] = -self.grid.cumsum(self.grid.Z_metrics["outer"], "Z")
             self.grid._ds['p'] = xr.apply_ufunc(
                 gsw.p_from_z, self.grid._ds.z, self.grid._ds.lat, 0, 0, dask="parallelized"
             )
@@ -157,27 +165,32 @@ class WaterMass:
             z_ref = self.grid._ds.z
             p_ref = self.grid._ds.p
         
-        # While prognostic temperature and salinity in MOM6 should be interpreted
+        # Prognostic temperature and salinity in MOM6 should be interpreted
         # as conservative temperature and absolute salinity (following McDougall
-        # et al. 2021), models such as MOM6 convert these into potential temperature
-        # and practical salinity before being posted as `thetao` and `so` diagnostics.
+        # et al. 2021).
         if self.teos10 and "sa" not in self.grid._ds:
-            self.grid._ds['sa'] = xr.apply_ufunc(
-                gsw.SA_from_SP,
-                self.grid._ds[self.s_name],
-                self.grid._ds.p,
-                self.grid._ds.lon,
-                self.grid._ds.lat,
-                dask="parallelized",
-            )
+            if self.s_var == "absolute":
+                self.grid._ds['sa'] = self.grid._ds[self.s_name]
+            elif self.s_var == "practical":
+                self.grid._ds['sa'] = xr.apply_ufunc(
+                    gsw.SA_from_SP,
+                    self.grid._ds[self.s_name],
+                    self.grid._ds.p,
+                    self.grid._ds.lon,
+                    self.grid._ds.lat,
+                    dask="parallelized",
+                )
         if self.teos10 and "ct" not in self.grid._ds:
-            self.grid._ds['ct'] = xr.apply_ufunc(
-                gsw.CT_from_t,
-                self.grid._ds.sa,
-                self.grid._ds[self.t_name],
-                self.grid._ds.p,
-                dask="parallelized"
-            )
+            if self.t_var == "conservative":
+                self.grid._ds['ct'] = self.grid._ds[self.t_name]
+            elif self.t_var == "potential":
+                self.grid._ds['ct'] = xr.apply_ufunc(
+                    gsw.CT_from_t,
+                    self.grid._ds.sa,
+                    self.grid._ds[self.t_name],
+                    self.grid._ds.p,
+                    dask="parallelized"
+                )
         if not self.teos10 and ("sa" not in vars(self) or "ct" not in vars(self)):
             self.grid._ds['sa'] = self.grid._ds[self.s_name]
             self.grid._ds['ct'] = self.grid._ds[self.t_name]
