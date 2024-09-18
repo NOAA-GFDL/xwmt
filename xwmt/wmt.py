@@ -363,10 +363,13 @@ class WaterMassTransformations(WaterMass):
             self.method = "xgcm"
         else:
             onedimensional_target = False
-            lam_i = (
-                self.grid.interp(lam, "Z", boundary="extend")
-                .rename(f"{lam.name}_i")
-            )
+            if self.grid.axes['Z'].coords['center'] in lam.dims:
+                lam_i = (
+                    self.grid.interp(lam, "Z", boundary="extend")
+                    .rename(f"{lam.name}_i")
+                )
+            else:
+                lam_i = lam.broadcast_like(self.grid._ds[self.grid.axes['Z'].coords['center']])
 
         if lambda_name in self.lambdas("density"):
             hlamdot_transformed = []
@@ -404,7 +407,6 @@ class WaterMassTransformations(WaterMass):
                     hlamdot_transformed.append(
                         (hlamdot_transformed_component / np.diff(bin_bounds)).rename(f"{term}_{tend}")
                     )
-
             hlamdot_transformed = xr.merge(hlamdot_transformed)
         else:
             (component_name, process) = self.process_names(
@@ -441,7 +443,7 @@ class WaterMassTransformations(WaterMass):
             ).rename(f"{term}")
         return hlamdot_transformed
 
-    def transform_hlamdot(self, lambda_name, term=None, bins=None, mask=None, integrate=True):
+    def transformations_from_hlamdot(self, lambda_name, term=None, bins=None, mask=None, integrate=True):
         """
         Lazily compute extensive tendencies, transform them into lambda space
         along the vertical ("Z") dimension, and integrate along the
@@ -459,9 +461,9 @@ class WaterMassTransformations(WaterMass):
             
         wmts = []
         for term in terms:
-            wmt = self.transform_hlamdot_term(lambda_name, term=term, bins=bins, mask=mask, integrate=integrate)
-            if wmt is not None:
-                wmts.append(wmt)
+            transformed_hlamdot = self.transform_hlamdot_term(lambda_name, term=term, bins=bins, mask=mask, integrate=integrate)
+            if transformed_hlamdot is not None:
+                wmts.append(-transformed_hlamdot)
             else:
                 print(f"Process '{term}' for component {lambda_name} is unavailable.")
         return xr.merge(wmts)
@@ -497,13 +499,13 @@ class WaterMassTransformations(WaterMass):
                     if 'lhs' in budget:
                         self._sum_terms(
                             hlamdot,
-                            f"kinematic_material_derivative{suffix}",
+                            f"kinematic_transformation{suffix}",
                             [f"{term}{suffix}" for term in budget['lhs'].keys()]
                         )
                     if 'rhs' in budget:
                         self._sum_terms(
                             hlamdot,
-                            f"process_material_derivative{suffix}",
+                            f"material_transformation{suffix}",
                             [f"{term}{suffix}" for term in budget['rhs'].keys()]
                         )
         return hlamdot
@@ -524,8 +526,8 @@ class WaterMassTransformations(WaterMass):
             )
         if group_processes:
             for proc in [
-                "kinematic_material_derivative",
-                "process_material_derivative"
+                "kinematic_transformation",
+                "material_transformation"
             ]:
                 self._sum_terms(
                     hlamdot,
@@ -536,7 +538,7 @@ class WaterMassTransformations(WaterMass):
 
     def map_transformations(self, lambda_name, *args, **kwargs):
         """
-        Wrapper function for transform_hlamdot() to group terms based
+        Wrapper function for transformations_from_hlamdot() to group terms based
         on tendency terms (heat, salt) and processes.
         """
         
@@ -545,7 +547,7 @@ class WaterMassTransformations(WaterMass):
         sum_components = kwargs.pop("sum_components", True)
         
         # call the base function
-        transformations = self.transform_hlamdot(lambda_name, integrate=False, **kwargs)
+        transformations = self.transformations_from_hlamdot(lambda_name, integrate=False, **kwargs)
 
         # process this function arguments
         if sum_components:
@@ -585,7 +587,7 @@ class WaterMassTransformations(WaterMass):
         sum_components = kwargs.pop("sum_components", True)
         
         # call the base function
-        transformations = self.transform_hlamdot(lambda_name, integrate=True, **kwargs)
+        transformations = self.transformations_from_hlamdot(lambda_name, integrate=True, **kwargs)
 
         # process this function arguments
         if sum_components:
