@@ -6,7 +6,7 @@ import warnings
 
 class WaterMass:
     """
-    A class object with multiple methods for characterizing and analyzing water masses in ocean models.
+    Stores water mass characteristics and supports methods for analyzing water masses on a numerical grid.
     """
     def __init__(
         self,
@@ -21,28 +21,29 @@ class WaterMass:
         s_var="absolute",
         ):
         """
-        Create a new watermass object from an input dataset.
+        Create a new WaterMass object from an input xgcm.Grid instance.
 
         Parameters
         ----------
         grid: xgcm.Grid
             Contains information about ocean model grid coordinates, metrics, and data variables.
-        t_name: str
+        t_name: str (default: "thetao")
             Name of conservative temperature variable [in degrees Celsius] in ds.
-        s_name: str
+        s_name: str (default: "so")
             Name of absolute salinity variable [in g/kg] in ds.
-        h_name: str
+        h_name: str (default: "thkcello")
             Name of thickness variable [in m] in ds.
-        teos10 : boolean, optional
-            Use Thermodynamic Equation Of Seawater - 2010 (TEOS-10). True by default.
-        cp: float
+        teos10 : boolean (default: True)
+            Get expansion/contraction coefficients from the Thermodynamic Equation Of Seawater - 2010 (TEOS-10),
+            unless "alpha" and "beta" variables already present in `grid._ds`.
+        cp: float (default: 3992.0)
             Value of specific heat capacity.
-        rho_ref: float
-            Value of reference potential density. Note: WaterMass is assumed to be Boussinesq.
-        t_var: str
-            Supported temperature variable options are "conservative" and "potential"
-        s_var: str
-            Supported salinity variable options are "absolute" and "practical"
+        rho_ref: float (default: 1035.0)
+            Value of reference potential density, assuming Boussinesq approximation.
+        t_var: str ("absolute" or "practical")
+            Does variable `t_name` represent "conservative" and "potential" temperature?
+        s_var: str ("absolute" or "practical")
+            Does variable `s_name` represent "absolute" and "practical" temperature?
         """
         # Grid copy
         self.grid = xgcm.Grid(
@@ -118,7 +119,7 @@ class WaterMass:
             self.h_name = "h"
         self.grid._ds['z'] = -self.grid.cumsum(self.grid.Z_metrics["outer"], "Z")
         
-    def get_density(self, density_name=None, add_to_dataset=True):
+    def get_density(self, density_name="rho"):
         """
         Derive density variables from layer temperature, salinity, and thickness,
         and add them to the dataset (if not already present).
@@ -127,10 +128,14 @@ class WaterMass:
 
         Parameters
         ----------
-        density_name: str
-            Name of density variable. Supported density variables are: "sigma0",
-            "sigma1", "sigma2", "sigma3", "sigma4" (corresponding to functions
-            of the same name in the `gsw` package).
+        density_name: str (default: "rho")
+            Name of density variable. Supported density variables are: 
+            "rho" (in-situ), "sigma0", "sigma1", "sigma2", "sigma3", "sigma4"
+            (corresponding to functions of the same name in the `gsw` package).
+
+        Returns
+        -------
+        xr.DataArray
         """
         
         if self.t_name not in self.grid._ds:
@@ -160,10 +165,11 @@ class WaterMass:
             p_ref = xr.apply_ufunc(
                 gsw.p_from_z, z_ref, self.grid._ds.lat, 0, 0, dask="parallelized"
             )
-        else:
-            # default to in-situ elevation and pressure
+        elif density_name == "rho":
             z_ref = self.grid._ds.z
             p_ref = self.grid._ds.p
+        else:
+            raise NameError(f"`density_name = {density_name}` is not a supported option.")
         
         # Prognostic temperature and salinity in MOM6 should be interpreted
         # as conservative temperature and absolute salinity (following McDougall
@@ -208,23 +214,25 @@ class WaterMass:
             )
 
         # Calculate potential density (kg/m^3)
-        if density_name is None:
-            return None
-        
-        else:
-            if density_name not in self.grid._ds:
-                if ("sigma" in density_name):
-                    self.grid._ds[density_name] = xr.apply_ufunc(
-                        getattr(gsw, density_name),
-                        self.grid._ds.sa,
-                        self.grid._ds.ct,
-                        dask="parallelized"
-                    ).rename(density_name)
-                    
-                else:
-                    return None
+        if density_name not in self.grid._ds:
+            if density_name == "rho":
+                self.grid._ds[density_name] = xr.apply_ufunc(
+                    getattr(gsw, density_name),
+                    self.grid._ds.sa,
+                    self.grid._ds.ct,
+                    self.grid._ds.p,
+                    dask="parallelized"
+                ).rename(density_name)
+            
+            elif "sigma" in density_name:
+                self.grid._ds[density_name] = xr.apply_ufunc(
+                    getattr(gsw, density_name),
+                    self.grid._ds.sa,
+                    self.grid._ds.ct,
+                    dask="parallelized"
+                ).rename(density_name)
 
-            return self.grid._ds[density_name]
+        return self.grid._ds[density_name]
 
     def get_outcrop_lev(self, position="center", incrop=False):
         """
@@ -255,13 +263,18 @@ class WaterMass:
 
         Parameters
         ----------
-        position: str
+        da : xr.DataArray
+        incrop : bool
+            Default: False. If True, returns the seafloor incrop level instead.
+        position : str
             Position of the desired vertical coordinate in the `self.grid` instance of `xgcm.Grid`.
             Default: "center". Other supported option is "outer".
-        incrop: bool
-            Default: False. If True, returns the seafloor incrop level instead.
-        **kwargs:
+        **kwargs : **dict
             Passed to the `xr.DataArray.sel` method on the vertical thickness.
+
+        Returns
+        -------
+        xr.DataArray
         """
         z_coord = self.grid.axes['Z'].coords[position]
         dk = int(2*incrop - 1)
@@ -287,6 +300,9 @@ class WaterMass:
         ----------
         da_surf: xarray.DataArray
             Variable that is to be expanded in the vertical.
+        position : str
+            Position of the desired vertical coordinate in the `self.grid` instance of `xgcm.Grid`.
+            Default: "outer". Other supported option is "center".
         """
         z_coord = self.grid.axes['Z'].coords[target_position]
         return (
@@ -324,7 +340,7 @@ class WaterMass:
 
     def zonal_mean(self, da, oceanmask_name="wet"):
         """
-        Compute area-weighted zonal mean.
+        Compute area-weighted zonal mean (along `X` grid axis).
         
         Parameters
         ----------
@@ -338,7 +354,7 @@ class WaterMass:
         num = (da * area * self.grid._ds[landmask_name]).sum(dim=x_name)
         denom = (area * self.grid._ds[landmask_name]).sum(dim=x_name)
         return num / denom
-    
+
 def add_gridcoords(grid, coords, boundary):
     new_grid = xgcm.Grid(
         grid._ds,

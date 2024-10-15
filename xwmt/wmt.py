@@ -4,17 +4,18 @@ import xarray as xr
 from xhistogram.xarray import histogram
 import warnings
 
+from xbudget import flatten_lol
 from xwmt.wm import WaterMass
 from xwmt.compute import calc_hlamdot_tendency
 
 class WaterMassTransformations(WaterMass):
     """
-    A class object with multiple methods to do full 3d watermass transformation analysis.
+    An extension of the WaterMass class that includes methods for WaterMass transformation analysis.
     """
     def __init__(
         self,
         grid,
-        budgets_dict,
+        xbudget_dict,
         mask=None,
         teos10=True,
         cp=3992.0,
@@ -23,39 +24,52 @@ class WaterMassTransformations(WaterMass):
         rebin=False
         ):
         """
-        Create a new watermass object from an input dataset.
+        Create a new WaterMassTransformation object from an input xgcm.Grid and xbudget dictionary.
 
         Parameters
         ----------
-        grid: xgcm.Grid
+        grid : xgcm.Grid
             Contains information about ocean model grid coordinates, metrics, and data variables.
-        budgets_dict: dict
+        xbudget_dict : dict
             Nested dictionary containing information about lambda and tendency variable names.
-            See `xwmt/conventions` for examples of how this dictionary should be structured.
-        teos10 : boolean, optional
+            See `xwmt/conventions` for examples of how this dictionary should be structured
+            or the `xbudget` package: https://github.com/hdrake/xbudget
+        mask : xr.DataArray (default: None)
+            Boolean region mask (with same X and Y grid dimensions as `grid._ds` variables).
+            If None, generate an all-True mask for domain-wide calculations.
+        teos10 : bool (default: True)
             Use Thermodynamic Equation Of Seawater - 2010 (TEOS-10). True by default.
-        cp: float
+        cp : float (default: 3992.0, the MOM6 default value)
             Value of specific heat capacity.
-        rho_ref: float
+        rho_ref : float (default: 1035.0, the MOM6 default value)
             Value of reference potential density. Note: WaterMass is assumed to be Boussinesq.
+        method : str (default: "default")
+            Method used for vertical transformations.
+            Supported options: "default", "xhistogram", "xgcm".
+            If "default", use "xhistogram" for area-integrated calculations (`integrate=True`)
+            or "xgcm" for column-wise calculations (`integrate=False`) for efficiency.
+            The other options force the use of a specific method, perhaps at the cost of efficiency.
+        rebin : bool (default: False)
+            Set to True to force a transformation into the target coordinates, even if these
+            coordinates already exist in the `grid` data structure.
         """
         
         self.method = method
         self.rebin = rebin
         self.component_dict = {}
         for component in ["heat", "salt"]:
-            if component in budgets_dict:
-                if "lambda" in budgets_dict[component]:
-                    self.component_dict[component] = budgets_dict[component]["lambda"]
-                elif "surface_lambda" in budgets_dict[component]:
-                    self.component_dict[component] = budgets_dict[component]["surface_lambda"]
+            if component in xbudget_dict:
+                if "lambda" in xbudget_dict[component]:
+                    self.component_dict[component] = xbudget_dict[component]["lambda"]
+                elif "surface_lambda" in xbudget_dict[component]:
+                    self.component_dict[component] = xbudget_dict[component]["surface_lambda"]
                 else:
                     self.component_dict[component] = None
 
         h_name = None
-        if "mass" in budgets_dict:
-            if "thickness" in budgets_dict["mass"]:
-                h_name = budgets_dict["mass"]["thickness"]
+        if "mass" in xbudget_dict:
+            if "thickness" in xbudget_dict["mass"]:
+                h_name = xbudget_dict["mass"]["thickness"]
                 
         super().__init__(
             grid,
@@ -72,8 +86,8 @@ class WaterMassTransformations(WaterMass):
             "density": ["sigma0", "sigma1", "sigma2", "sigma3", "sigma4"],
         }
         
-        self.budgets_dict = copy.deepcopy(budgets_dict)
-        for (term, bdict) in self.budgets_dict.items():
+        self.xbudget_dict = copy.deepcopy(xbudget_dict)
+        for (term, bdict) in self.xbudget_dict.items():
             setattr(self, f"processes_{term}_dict", {})
             for ptype, _processes in bdict.items():
                 if ptype in ["lhs", "rhs"]:
@@ -81,31 +95,88 @@ class WaterMassTransformations(WaterMass):
 
     def lambdas(self, lambda_key=None):
         """
-        Return dictionary of desired lambdas, defaulting to all (temperature, salinity, and all densities).
+        Return dictionary of desired lambdas.
 
         Parameters
         ----------
-        lambda_name: str or list of str
-            Lambda(s) of interest.
+        lambda_key : str or list of str (default: None)
+            Lambda(s) of interest. If None, return a list of all available lambdas.
 
         Returns
         -------
         list
+
+        Example
+        -------
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt.lambdas()
+        ['thetao', 'so', 'sigma0', 'sigma1', 'sigma2', 'sigma3', 'sigma4']
         """
         if lambda_key is None:
-            return sum(self.lambdas_dict.values(), [])
+            return flatten_lol(self.lambdas_dict.values())
         else:
             return self.lambdas_dict.get(lambda_key, None)
         
     def get_lambda_var(self, lambda_name=None):
+        """
+        Search lambda dictionary for variable name corresponding to specified lambda
+
+        Parameters
+        ----------
+        lambda_name : str (default: None)
+            Name of lambda variable. Supported options: ["heat", "salt", "density"]
+            If None, return None
+
+        Returns
+        -------
+        str or list
+
+        Example
+        -------
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt.get_lambda_var("heat")
+        'thetao'
+        
+        >>> wmt.get_lambda_var("density")
+        ['sigma0', 'sigma1', 'sigma2', 'sigma3', 'sigma4']
+        
+        See also
+        --------
+        self.lambdas, self.get_lambda_key
+        """
         if lambda_name in self.lambdas_dict:
             return self.lambdas_dict[lambda_name]
         elif lambda_name in self.lambdas_dict["density"]:
             return lambda_name
         else:
-            return
+            return None
         
     def get_lambda_key(self, lambda_var):
+        """
+        Search lambda dictionary for lambda corresponding to variable name
+
+        Parameters
+        ----------
+        lambda_var : str
+            Variable name of lambda.
+
+        Returns
+        -------
+        str
+
+        Example
+        -------
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt.get_lambda_key("thetao")
+        'heat'
+        
+        >>> wmt.get_lambda_var("sigma2")
+        'density'
+
+        See also
+        --------
+        self.lambdas, self.get_lambda_var
+        """
         for k,v in self.lambdas_dict.items():
             if type(v) is str:
                 if lambda_var == v:
@@ -117,18 +188,26 @@ class WaterMassTransformations(WaterMass):
 
     def process_names(self, component, term):
         """
-        Get a tuple containing the names of variables for the density component (temperature or salinity)
+        Get a tuple containing the names of variables for the density 'component' (temperature or salinity)
         and the 'process'-specific tendency corresponding to a general 'term' in the tendency equation.
 
         Parameters
         ----------
-        lambda_name: str or list of str
-            Lambda(s) of interest.
+        component : str
+            Supported options: ["heat", "salt"]
+        term : str
+            key for tendency variable in the xbudget_dict
 
         Returns
         -------
         names : tuple
             `(component_name, process)`
+
+        Example
+        -------
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt.process_names("heat", "diffusion")
+        ('thetao', 'opottempdiff')
         """
         if component == "heat":
             process = self.processes_heat_dict.get(term, None)
@@ -142,7 +221,7 @@ class WaterMassTransformations(WaterMass):
 
     def available_processes(self, available=True):
         """
-        Get a list of all tendency processes that are both specified by `budgets_dict` and available in
+        Get a list of all tendency processes that are both specified by `xbudget_dict` and available in
         the dataset.
 
         Parameters
@@ -154,6 +233,9 @@ class WaterMassTransformations(WaterMass):
         -------
         names : tuple
             `(component_name, process)`
+
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> processes = wmt.available_processes()
         """
         processes = (
             self.processes_heat_dict.keys() |
@@ -181,14 +263,19 @@ class WaterMassTransformations(WaterMass):
 
         Parameters
         ----------
-        component: str
-            Either "heat" or "salt".
-        term: str
-            Name of tendency term
+        component : str
+            Supported options: ["heat", "salt"]
+        term : str
+            key for tendency variable in the xbudget_dict
 
         Returns
         -------
         ddict : dict
+
+        Example
+        --------
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> ddict = wmt.datadict("heat", "diffusion")
         """
         
         (component_name, process) = self.process_names(component, term)
@@ -228,13 +315,19 @@ class WaterMassTransformations(WaterMass):
 
         Parameters
         ----------
-        term: str
-            Name of tendency term
+        term : str
+            key for tendency variable in the xbudget_dict
 
         Returns
         -------
         rho_tend_heat, rho_tend_salt
             The two distinct components contributing to the overall density tendency.
+
+        Example
+        --------
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt.get_density()
+        >>> (rho_tend_heat, rho_tend_salt) = wmt.rho_tend("diffusion")
         """
 
         # Either heat or salt tendency/flux may not be used
@@ -263,11 +356,16 @@ class WaterMassTransformations(WaterMass):
         lambda_name : str
             Specifies lambda
         term : str
-            Specifies process term
+            key for tendency variable in the xbudget_dict
             
         Returns
         ----------
         hlamdot, lam : xr.DataArray, xr.DataArray
+
+        Example
+        --------
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> (hlamdot, lam) = wmt.calc_hlamdot_and_lambda("heat", "diffusion")
         """
         
         lam_var = self.get_lambda_var(lambda_name)
@@ -302,7 +400,7 @@ class WaterMassTransformations(WaterMass):
             hlamdot = {}
             for idx, tend in enumerate(self.component_dict.keys()):
                 if rhos[idx] is not None:
-                    hlamdot[tend] = rhos[idx]*self.rho_ref
+                    hlamdot[tend] = rhos[idx]*self.rho_ref # Is this correct for non-boussinesq case?
                 elif rhos[idx] is None:
                     hlamdot[tend] = rhos[idx]
                     
@@ -320,10 +418,35 @@ class WaterMassTransformations(WaterMass):
         except NameError:
             return None, None
 
-    def transform_hlamdot_term(self, lambda_name, term, bins=None, mask=None, integrate=False):
+    def transform_hlamdot_term(self, lambda_name, term, bins=None, mask=None, integrate=True):
         """
         Lazily compute extensive tendencies and transform them into lambda space
         along the vertical ("Z") dimension.
+        
+        Parameters
+        ----------
+        lambda_name : str
+            Specifies lambda (e.g., 'heat', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
+        term : str
+            Specifies process term (e.g., 'boundary_forcing', 'vertical_diffusion', etc.). Use `self.available_processes()`
+            to see a list of all available terms.
+        bins : array like (default None)
+            np.array with lambda values specifying the edges for each bin. If not specified, array will be automatically
+            derived from the scalar field of lambda (e.g., temperature).
+        mask : xr.DataArray (default: None)
+            Boolean region mask (with same X and Y grid dimensions as `grid._ds` variables).
+            If None, generate an all-True mask for domain-wide calculations.
+        integrate : bool (default: True)
+            Whether to integrate the result over ("X", "Y") dimensions.
+        
+        Returns
+        -------
+        transformed_term : xarray.DataArray
+            Data array containing transformed tendencies.
+
+        See also
+        --------
+        self.transformations_from_hlamdot, self.integrate_transformations
         """
 
         hlamdot, lam = self.calc_hlamdot_and_lambda(lambda_name, term)
@@ -446,8 +569,34 @@ class WaterMassTransformations(WaterMass):
     def transformations_from_hlamdot(self, lambda_name, term=None, bins=None, mask=None, integrate=True):
         """
         Lazily compute extensive tendencies, transform them into lambda space
-        along the vertical ("Z") dimension, and integrate along the
+        along the vertical ("Z") dimension, and optionally integrate along the
         horizontal dimensions ("X", "Y").
+
+        Parameters
+        ----------
+        lambda_name : str
+            Specifies lambda (e.g., 'heat', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
+        term : str or list of str (default: None)
+            Specifies process term (e.g., 'boundary_forcing', 'vertical_diffusion', etc.). Use `self.available_processes()`
+            to list all terms. If None, defaults to list of all terms.
+        bins : array like (default None)
+            np.array with lambda values specifying the edges for each bin. If not specified, array will be automatically
+            derived from the scalar field of lambda (e.g., temperature).
+        mask : xr.DataArray (default: None)
+            Boolean region mask (with same X and Y grid dimensions as `grid._ds` variables).
+            If None, generate an all-True mask for domain-wide calculations.
+        integrate : bool (default: True)
+            Whether to integrate the result over ("X", "Y") dimensions.
+        
+        Returns
+        -------
+        transformations : xarray.Dataset
+            Dataset containing components of water mass transformations, possibly grouped as
+            specified by the arguments.
+
+        See also
+        --------
+        self.integrate_transformations, self.map_transformations
         """
         
         if isinstance(term, str):
@@ -491,10 +640,10 @@ class WaterMassTransformations(WaterMass):
             if (lambda_key is not None):
                 if lambda_key == "density":
                     suffixes = ["_heat", "_salt", ""]
-                    budget = self.budgets_dict["heat"]
+                    budget = self.xbudget_dict["heat"]
                 else:
                     suffixes = [""]
-                    budget = self.budgets_dict[lambda_key]
+                    budget = self.xbudget_dict[lambda_key]
                 for suffix in suffixes:
                     if 'lhs' in budget:
                         self._sum_terms(
@@ -536,18 +685,60 @@ class WaterMassTransformations(WaterMass):
                 )
         return hlamdot
 
-    def map_transformations(self, lambda_name, *args, **kwargs):
+    def map_transformations(
+        self,
+        lambda_name,
+        term=None,
+        group_processes=False,
+        sum_components=True,
+        bins=None,
+        mask=None
+        ):
         """
-        Wrapper function for transformations_from_hlamdot() to group terms based
-        on tendency terms (heat, salt) and processes.
-        """
+        Lazily compute column-wise water mass transformations.
+
+        Parameters
+        ----------
+        lambda_name : str
+            Specifies lambda (e.g., 'heat', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
+        term : str or list of str (default: None)
+            Specifies process term (e.g., 'boundary_forcing', 'vertical_diffusion', etc.). Use `self.available_processes()`
+            to list all terms. If None, defaults to list of all terms.
+        group_processes: bool (default: False)
+            Specify whether process terms are summed to categories forcing and diffusion.
+        sum_components : bool (default: True)
+            Specify whether heat and salt tendencies are summed together (True) or kept separated (False).
+        bins : array like (default None)
+            np.array with lambda values specifying the edges for each bin. If not specified, array will be automatically
+            derived from the scalar field of lambda (e.g., temperature).
+        mask : xr.DataArray (default: None)
+            Boolean region mask (with same X and Y grid dimensions as `grid._ds` variables).
+            If None, generate an all-True mask for domain-wide calculations.
         
-        # Extract default function args
-        group_processes = kwargs.pop("group_processes", False)
-        sum_components = kwargs.pop("sum_components", True)
+        Returns
+        -------
+        transformations : xarray.Dataset
+            Dataset containing components of water mass transformations, possibly grouped as
+            specified by the arguments.
+
+        Example
+        --------
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt_rates = wmt.map_transformations("heat", term=["diffusion"])
+        
+        See also
+        --------
+        self.transformations_from_hlamdot, self.integrate_transformations
+        """
         
         # call the base function
-        transformations = self.transformations_from_hlamdot(lambda_name, integrate=False, **kwargs)
+        transformations = self.transformations_from_hlamdot(
+            lambda_name,
+            term=term,
+            bins=bins,
+            mask=mask,
+            integrate=False,
+        )
 
         # process this function arguments
         if sum_components:
@@ -557,37 +748,60 @@ class WaterMassTransformations(WaterMass):
             
         return transformations
 
-    def integrate_transformations(self, lambda_name, *args, **kwargs):
+    def integrate_transformations(
+        self,
+        lambda_name,
+        term=None,
+        group_processes=False,
+        sum_components=True,
+        bins=None,
+        mask=None,
+        ):
         """
         Lazily compute horizontally-integrated water mass transformations.
 
         Parameters
         ----------
         lambda_name : str
-            Specifies lambda (e.g., 'temperature', 'salinity', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
-        term : str, optional
-            Specifies process term (e.g., 'boundary_forcing', 'vertical_diffusion', etc.). Use `processes()` to list all available terms.
-        bins : array like, optional
-            np.array with lambda values specifying the edges for each bin. If not specidied, array will be automatically derived from
-            the scalar field of lambda (e.g., temperature).
-        sum_components : boolean, optional
-            Specify whether heat and salt tendencies are summed together (True) or kept separated (False). True by default.
-        group_processes: boolean, optional
-            Specify whether process terms are summed to categories forcing and diffusion. False by default.
-
+            Specifies lambda (e.g., 'heat', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
+        term : str or list of str (default: None)
+            Specifies process term (e.g., 'boundary_forcing', 'vertical_diffusion', etc.). Use `self.available_processes()`
+            to list all terms. If None, defaults to list of all terms.
+        group_processes: bool (default: False)
+            Specify whether process terms are summed to categories forcing and diffusion.
+        sum_components : bool (default: True)
+            Specify whether heat and salt tendencies are summed together (True) or kept separated (False).
+        bins : array like (default None)
+            np.array with lambda values specifying the edges for each bin. If not specified, array will be automatically
+            derived from the scalar field of lambda (e.g., temperature).
+        mask : xr.DataArray (default: None)
+            Boolean region mask (with same X and Y grid dimensions as `grid._ds` variables).
+            If None, generate an all-True mask for domain-wide calculations.
+        
         Returns
         -------
         transformations : xarray.Dataset
             Dataset containing components of water mass transformations, possibly grouped as
             specified by the arguments.
-        """
 
-        # Extract default function args
-        group_processes = kwargs.pop("group_processes", False)
-        sum_components = kwargs.pop("sum_components", True)
+        Example
+        --------
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt_rates = wmt.map_transformations("heat", term=["diffusion"])
+
+        See also
+        --------
+        self.transformations_from_hlamdot, self.map_transformations
+        """
         
         # call the base function
-        transformations = self.transformations_from_hlamdot(lambda_name, integrate=True, **kwargs)
+        transformations = self.transformations_from_hlamdot(
+            lambda_name,
+            term=term,
+            bins=bins,
+            mask=mask,
+            integrate=True,
+        )
 
         # process this function arguments
         if sum_components:
