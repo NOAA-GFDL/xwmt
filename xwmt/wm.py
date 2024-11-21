@@ -98,8 +98,8 @@ class WaterMass:
         elif "Z" not in self.grid.axes:
             self.grid._ds["z_l"] = xr.DataArray([0.5], dims=("z_l",))
             self.grid._ds["z_i"] = xr.DataArray([0, 1.], dims=("z_i",))
-            self.grid._ds["h"] = xr.DataArray([1], dims=("z_l",))
-            self.grid._ds["h_i"] = xr.DataArray([0.5, 0.5], dims=("z_i",))
+            self.grid._ds[f"{self.h_name}"] = xr.DataArray([1], dims=("z_l",))
+            self.grid._ds[f"{self.h_name}_i"] = xr.DataArray([0.5, 0.5], dims=("z_i",))
             coords_2d = {ax:self.grid.axes[ax].coords for ax in self.grid.axes.keys()}
             coords_2d["Z"] = {"center": "z_l", "outer": "z_i"}
             metrics_2d = {k:vv.name for (k,v) in self.grid._metrics.items() for vv in v}
@@ -113,11 +113,18 @@ class WaterMass:
                 autoparse_metadata=False
             )
             setattr(self.grid, "Z_metrics", {
-                "center": self.grid._ds["h"],
-                "outer": self.grid._ds["h_i"]
+                "center": self.grid._ds[f"{self.h_name}"],
+                "outer": self.grid._ds[f"{self.h_name}_i"]
             })
             self.h_name = "h"
-        self.grid._ds['z'] = -self.grid.cumsum(self.grid.Z_metrics["outer"], "Z")
+        self.grid._ds['z'] = (
+            -self.grid.cumsum(self.grid.Z_metrics["outer"], "Z")
+        ).chunk({self.grid.axes["Z"].coords["center"]: -1})
+        self.grid._ds['z_interface'] = xr.where(
+            self.grid.axes["Z"].coords["outer"] != self.grid.axes["Z"].coords["outer"][0],
+            -self.grid.cumsum(self.grid.Z_metrics["center"], "Z", to="outer"),
+            0.
+        ).chunk({self.grid.axes["Z"].coords["outer"]: -1})
         
     def get_density(self, density_name="rho"):
         """
