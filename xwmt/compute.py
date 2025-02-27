@@ -8,7 +8,7 @@ import xgcm
 def hlamdot_from_Jlam(grid, Jlam, dim):
     """
     Calculation of hlamdot (cell-depth integral of scalar tendency)
-    provided various forms of input (fluxes, tendencies, intensive, extensive)
+    from interfacial fluxes
     """
     # For convergence, need to reverse the sign
     dJlam = -grid.diff(Jlam, dim)
