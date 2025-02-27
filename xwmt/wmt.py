@@ -299,8 +299,8 @@ class WaterMassTransformations(WaterMass):
         ])
         
         if n_zcoords == 0:
-            tend_arr = self.expand_surface_array_vertically(tend_arr)
-            tend_dict = {"interfacial_flux": tend_arr}
+            tend_arr = self.expand_surface_array_vertically(tend_arr, target_position="center")
+            tend_dict = {"layer_integrated_tendency": tend_arr}
         elif n_zcoords > 0:
             if (self.grid.axes['Z'].coords["outer"] in self.grid._ds[process].dims):
                 tend_dict = {"interfacial_flux": tend_arr}
