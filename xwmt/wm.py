@@ -90,8 +90,8 @@ class WaterMass:
                     self.grid._ds[self.grid.axes['Z'].coords['outer']].values
                 })
             setattr(self.grid, "Z_metrics", {
-                "center": self.grid._ds[h_name],
-                "outer": self.grid._ds[f'{h_name}_i']
+                "center": self.grid._ds[self.h_name],
+                "outer": self.grid._ds[f'{self.h_name}_i']
             })
             if "time" in self.grid._ds:
                 self.grid._ds.time.attrs = time_attrs # For some reason these are not preserved by default
@@ -116,7 +116,6 @@ class WaterMass:
                 "center": self.grid._ds[f"{self.h_name}"],
                 "outer": self.grid._ds[f"{self.h_name}_i"]
             })
-            self.h_name = "h"
         self.grid._ds['z'] = (
             -self.grid.cumsum(self.grid.Z_metrics["outer"], "Z")
         ).chunk({self.grid.axes["Z"].coords["center"]: -1})

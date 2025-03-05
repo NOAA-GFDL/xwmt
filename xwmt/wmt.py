@@ -66,19 +66,19 @@ class WaterMassTransformations(WaterMass):
                 else:
                     self.component_dict[component] = None
 
-        h_name = None
+        kwargs = {}
         if "mass" in xbudget_dict:
             if "thickness" in xbudget_dict["mass"]:
-                h_name = xbudget_dict["mass"]["thickness"]
+                kwargs["h_name"] = xbudget_dict["mass"]["thickness"]
                 
         super().__init__(
             grid,
             t_name=self.component_dict["heat"],
             s_name=self.component_dict["salt"],
-            h_name=h_name,
             teos10=teos10,
             cp=cp,
-            rho_ref=rho_ref
+            rho_ref=rho_ref,
+            **kwargs
         )
         
         self.lambdas_dict = {
