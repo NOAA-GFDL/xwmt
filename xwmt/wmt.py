@@ -1,687 +1,812 @@
+import copy
 import numpy as np
 import xarray as xr
 from xhistogram.xarray import histogram
-import gsw
 import warnings
 
-from xwmt.compute import (
-    Jlmass_from_Qm_lm_l,
-    calc_hldot_tendency,
-    expand_surface_to_3D,
-    get_xgcm_grid_vertical,
-    hldot_from_Jl,
-    hldot_from_Ldot_hldotmass,
-    lbin_define,
-    lbin_percentile,
-)
+from xbudget import flatten_lol
+from xwmt.wm import WaterMass
+from xwmt.compute import calc_hlamdot_tendency
 
-
-class wmt:
+class WaterMassTransformations(WaterMass):
     """
-    A class object with multiple functions to do full 3d watermass transformation analysis.
+    An extension of the WaterMass class that includes methods for WaterMass transformation analysis.
     """
-
-    def __init__(self, ds, Cp=3992.0, rho=1035.0, alpha=None, beta=None, teos10=True):
+    def __init__(
+        self,
+        grid,
+        xbudget_dict,
+        mask=None,
+        teos10=True,
+        cp=3992.0,
+        rho_ref=1035.0,
+        method="default",
+        rebin=False
+        ):
         """
-        Create a new watermass transformation object from an input dataset.
+        Create a new WaterMassTransformation object from an input xgcm.Grid and xbudget dictionary.
 
         Parameters
         ----------
-        ds : xarray.Dataset
-            Contains the relevant tendencies and/or surface fluxes along with grid information.
-        Cp : float, optional
-            Specify value for the specific heat capacity (in J/kg/K). Cp=3992.0 by default.
-        rho : float, optional
-            Specify value for the reference seawater density (in kg/m^3). rho=1035.0 by default.
-        alpha : float, optional
-            Specify value for the thermal expansion coefficient (in 1/K). alpha=None by default.
-            If alpha is not given (i.e., alpha=None), it is derived from salinty and temperature fields using `gsw_alpha`.
-        beta : float, optional
-            Specify value for the haline contraction coefficient (in kg/g). beta=None by default.
-            If beta is not given (i.e., beta=None), it is derived from salinty and temperature fields using `gsw_beta`.
-        teos10 : boolean, optional
+        grid : xgcm.Grid
+            Contains information about ocean model grid coordinates, metrics, and data variables.
+        xbudget_dict : dict
+            Nested dictionary containing information about lambda and tendency variable names.
+            See `xwmt/conventions` for examples of how this dictionary should be structured
+            or the `xbudget` package: https://github.com/hdrake/xbudget
+        mask : xr.DataArray (default: None)
+            Boolean region mask (with same X and Y grid dimensions as `grid._ds` variables).
+            If None, generate an all-True mask for domain-wide calculations.
+        teos10 : bool (default: True)
             Use Thermodynamic Equation Of Seawater - 2010 (TEOS-10). True by default.
+        cp : float (default: 3992.0, the MOM6 default value)
+            Value of specific heat capacity.
+        rho_ref : float (default: 1035.0, the MOM6 default value)
+            Value of reference potential density. Note: WaterMass is assumed to be Boussinesq.
+        method : str (default: "default")
+            Method used for vertical transformations.
+            Supported options: "default", "xhistogram", "xgcm".
+            If "default", use "xhistogram" for area-integrated calculations (`integrate=True`)
+            or "xgcm" for column-wise calculations (`integrate=False`) for efficiency.
+            The other options force the use of a specific method, perhaps at the cost of efficiency.
+        rebin : bool (default: False)
+            Set to True to force a transformation into the target coordinates, even if these
+            coordinates already exist in the `grid` data structure.
         """
+        
+        self.method = method
+        self.rebin = rebin
+        self.component_dict = {}
+        for component in ["heat", "salt"]:
+            if component in xbudget_dict:
+                if "lambda" in xbudget_dict[component]:
+                    self.component_dict[component] = xbudget_dict[component]["lambda"]
+                elif "surface_lambda" in xbudget_dict[component]:
+                    self.component_dict[component] = xbudget_dict[component]["surface_lambda"]
+                else:
+                    self.component_dict[component] = None
 
-        self.ds = ds.copy()
-        self.xgrid = get_xgcm_grid_vertical(self.ds, periodic=False)
-        self.Cp = Cp
-        self.rho = rho
-        if alpha is not None:
-            self.alpha = alpha
-        if beta is not None:
-            self.beta = beta
-        self.teos10 = teos10
+        kwargs = {}
+        if "mass" in xbudget_dict:
+            if "thickness" in xbudget_dict["mass"]:
+                kwargs["h_name"] = xbudget_dict["mass"]["thickness"]
+                
+        super().__init__(
+            grid,
+            t_name=self.component_dict["heat"],
+            s_name=self.component_dict["salt"],
+            teos10=teos10,
+            cp=cp,
+            rho_ref=rho_ref,
+            **kwargs
+        )
+        
+        self.lambdas_dict = {
+            **self.component_dict,
+            "density": ["sigma0", "sigma1", "sigma2", "sigma3", "sigma4"],
+        }
+        
+        self.xbudget_dict = copy.deepcopy(xbudget_dict)
+        for (term, bdict) in self.xbudget_dict.items():
+            setattr(self, f"processes_{term}_dict", {})
+            for ptype, _processes in bdict.items():
+                if ptype in ["lhs", "rhs"]:
+                    getattr(self, f"processes_{term}_dict").update(_processes)
 
-    # Set of terms for (1) heat and (2) salt fluxes
-    # Use processes as default, fluxes when surface=True
-    terms_dict = {"heat": "thetao", "salt": "so"}
+    def lambdas(self, lambda_key=None):
+        """
+        Return dictionary of desired lambdas.
 
-    processes_heat_dict = {
-        "boundary forcing": "boundary_forcing_heat_tendency",
-        "vertical diffusion": "opottempdiff",
-        "neutral diffusion": "opottemppmdiff",
-        "frazil ice": "frazil_heat_tendency",
-        "geothermal": "internal_heat_heat_tendency",
-    }
+        Parameters
+        ----------
+        lambda_key : str or list of str (default: None)
+            Lambda(s) of interest. If None, return a list of all available lambdas.
 
-    processes_salt_dict = {
-        "boundary forcing": "boundary_forcing_salt_tendency",
-        "vertical diffusion": "osaltdiff",
-        "neutral diffusion": "osaltpmdiff",
-        "frazil ice": None,
-        "geothermal": None,
-    }
+        Returns
+        -------
+        list
 
-    lambdas_dict = {
-        "heat": ["theta"],
-        "salt": ["salt"],
-        "density": ["sigma0", "sigma1", "sigma2", "sigma3", "sigma4"],
-    }
-
-    def lambdas(self, lstr=None):
-        if lstr is None:
-            return sum(self.lambdas_dict.values(), [])
+        Example
+        -------
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt.lambdas()
+        ['thetao', 'so', 'sigma0', 'sigma1', 'sigma2', 'sigma3', 'sigma4']
+        """
+        if lambda_key is None:
+            return flatten_lol(self.lambdas_dict.values())
         else:
-            return self.lambdas_dict.get(lstr, None)
+            return self.lambdas_dict.get(lambda_key, None)
+        
+    def get_lambda_var(self, lambda_name=None):
+        """
+        Search lambda dictionary for variable name corresponding to specified lambda
 
-    # Helper function to get variable name for given process term
-    def process(self, tendency, term):
-        # Organize by scalar and tendency
-        if tendency == "heat":
-            termcode = self.processes_heat_dict.get(term, None)
-        elif tendency == "salt":
-            termcode = self.processes_salt_dict.get(term, None)
+        Parameters
+        ----------
+        lambda_name : str (default: None)
+            Name of lambda variable. Supported options: ["heat", "salt", "density"]
+            If None, return None
+
+        Returns
+        -------
+        str or list
+
+        Example
+        -------
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt.get_lambda_var("heat")
+        'thetao'
+        
+        >>> wmt.get_lambda_var("density")
+        ['sigma0', 'sigma1', 'sigma2', 'sigma3', 'sigma4']
+        
+        See also
+        --------
+        self.lambdas, self.get_lambda_key
+        """
+        if lambda_name in self.lambdas_dict:
+            return self.lambdas_dict[lambda_name]
+        elif lambda_name in self.lambdas_dict["density"]:
+            return lambda_name
         else:
-            warnings.warn("Tendency is not defined")
+            return None
+        
+    def get_lambda_key(self, lambda_var):
+        """
+        Search lambda dictionary for lambda corresponding to variable name
+
+        Parameters
+        ----------
+        lambda_var : str
+            Variable name of lambda.
+
+        Returns
+        -------
+        str
+
+        Example
+        -------
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt.get_lambda_key("thetao")
+        'heat'
+        
+        >>> wmt.get_lambda_var("sigma2")
+        'density'
+
+        See also
+        --------
+        self.lambdas, self.get_lambda_var
+        """
+        for k,v in self.lambdas_dict.items():
+            if type(v) is str:
+                if lambda_var == v:
+                    return(k)
+            elif type(v) is list:
+                if lambda_var in v:
+                    return(k)
+
+
+    def process_names(self, component, term):
+        """
+        Get a tuple containing the names of variables for the density 'component' (temperature or salinity)
+        and the 'process'-specific tendency corresponding to a general 'term' in the tendency equation.
+
+        Parameters
+        ----------
+        component : str
+            Supported options: ["heat", "salt"]
+        term : str
+            key for tendency variable in the xbudget_dict
+
+        Returns
+        -------
+        names : tuple
+            `(component_name, process)`
+
+        Example
+        -------
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt.process_names("heat", "diffusion")
+        ('thetao', 'opottempdiff')
+        """
+        if component == "heat":
+            process = self.processes_heat_dict.get(term, None)
+        elif component == "salt":
+            process = self.processes_salt_dict.get(term, None)
+        else:
+            warnings.warn(f"Component {component} is not defined")
             return
-        tendcode = self.terms_dict.get(tendency, None)
-        return (tendcode, termcode)
+        component_name = self.component_dict.get(component, None)
+        return (component_name, process)
 
-    # Helper function to list available processes
-    def processes(self, check=True):
-        processes = self.processes_heat_dict.keys() | self.processes_salt_dict.keys()
-        if check:
+    def available_processes(self, available=True):
+        """
+        Get a list of all tendency processes that are both specified by `xbudget_dict` and available in
+        the dataset.
+
+        Parameters
+        ----------
+        available: bool
+            Default True. If False, include processes that are not available in the dataset.
+
+        Returns
+        -------
+        names : tuple
+            `(component_name, process)`
+
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> processes = wmt.available_processes()
+        """
+        processes = (
+            self.processes_heat_dict.keys() |
+            self.processes_salt_dict.keys() |
+            self.processes_mass_dict.keys()
+        )
+        if available:
             _processes = []
             for process in processes:
-                p1 = self.processes_salt_dict.get(process, None)
-                p2 = self.processes_heat_dict.get(process, None)
-                if ((p1 is None) or (p1 is not None and p1 in self.ds)) and (
-                    (p2 is None) or (p2 is not None and p2 in self.ds)
+                p1 = self.processes_heat_dict.get(process, None)
+                p2 = self.processes_salt_dict.get(process, None)
+                p3 = self.processes_mass_dict.get(process, None)
+                if (((p1 is None) or (p1 is not None and p1 in self.grid._ds)) and
+                    ((p2 is None) or (p2 is not None and p2 in self.grid._ds)) and
+                    ((p3 is None) or (p3 is not None and p3 in self.grid._ds))
                 ):
                     _processes.append(process)
             return _processes
         else:
             return processes
 
-    def dd(self, tendency, term):
-        (tendcode, termcode) = self.process(tendency, term)
-        # tendcode: tendency form (heat or salt)
-        # termcode: process term (e.g., boundary forcing)
-        if termcode is None or termcode not in self.ds:
+    def datadict(self, component, term):
+        """
+        Get a dictionary that organizes the variables and metadata necessary to evaluate tendency terms.
+
+        Parameters
+        ----------
+        component : str
+            Supported options: ["heat", "salt"]
+        term : str
+            key for tendency variable in the xbudget_dict
+
+        Returns
+        -------
+        ddict : dict
+
+        Example
+        --------
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> ddict = wmt.datadict("heat", "diffusion")
+        """
+        
+        (component_name, process) = self.process_names(component, term)
+        
+        if process is None or process not in self.grid._ds:
             return
 
-        if tendency == "salt":
-            # Multiply salt tendency by 1000 to convert to g/m^2/s
-            tend_arr = self.ds[termcode] * 1000
-        else:
-            tend_arr = self.ds[termcode]
-
-        if term == "boundary forcing":
-            if termcode == "boundary_forcing_heat_tendency":
-                # Need to multiply mass flux by Cp to convert to energy flux (convert to W/m^2/degC)
-                flux = (
-                    expand_surface_to_3D(self.ds["wfo"], self.ds["lev_outer"]) * self.Cp
-                )
-                scalar_in_mass = expand_surface_to_3D(
-                    self.ds["tos"], self.ds["lev_outer"]
-                )
-            else:
-                flux = expand_surface_to_3D(self.ds["wfo"], self.ds["lev_outer"])
-                scalar_in_mass = expand_surface_to_3D(
-                    xr.zeros_like(self.ds["sos"]), self.ds["lev_outer"]
-                )
-            return {
-                "scalar": {"array": self.ds[tendcode]},
-                "tendency": {"array": tend_arr, "extensive": True, "boundary": True},
-                "boundary": {
-                    "flux": flux,
-                    "mass": True,
-                    "scalar_in_mass": scalar_in_mass,
-                },
-            }
-        else:
-            return {
-                "scalar": {"array": self.ds[tendcode]},
-                "tendency": {"array": tend_arr, "extensive": True, "boundary": False},
-            }
-
-    def get_density(self, density_str=None):
-
-        # Variables needed to calculate alpha, beta and density
-        if (
-            "alpha" not in vars(self) or "beta" not in vars(self) or self.teos10
-        ) and "p" not in vars(self):
-            self.p = xr.apply_ufunc(
-                gsw.p_from_z, -self.ds["lev"], self.ds["lat"], 0, 0, dask="parallelized"
-            )
-        if self.teos10 and "sa" not in vars(self):
-            self.sa = xr.apply_ufunc(
-                gsw.SA_from_SP,
-                self.ds["so"],
-                self.p,
-                self.ds["lon"],
-                self.ds["lat"],
-                dask="parallelized",
-            )
-        if self.teos10 and "ct" not in vars(self):
-            self.ct = xr.apply_ufunc(
-                gsw.CT_from_t, self.sa, self.ds["thetao"], self.p, dask="parallelized"
-            )
-        if not self.teos10 and ("sa" not in vars(self) or "ct" not in vars(self)):
-            self.sa = self.ds.so
-            self.ct = self.ds.thetao
-
-        # Calculate thermal expansion coefficient alpha (1/K)
-        if "alpha" not in vars(self):
-            if "alpha" in self.ds:
-                self.alpha = self.ds.alpha
-            else:
-                self.alpha = xr.apply_ufunc(
-                    gsw.alpha, self.sa, self.ct, self.p, dask="parallelized"
-                )
-
-        # Calculate the haline contraction coefficient beta (kg/g)
-        if "beta" not in vars(self):
-            if "beta" in self.ds:
-                self.beta = self.ds.beta
-            else:
-                self.beta = xr.apply_ufunc(
-                    gsw.beta, self.sa, self.ct, self.p, dask="parallelized"
-                )
-
-        # Calculate potential density (kg/m^3)
-        if density_str not in self.ds:
-            if density_str == "sigma0":
-                density = xr.apply_ufunc(
-                    gsw.sigma0, self.sa, self.ct, dask="parallelized"
-                )
-            elif density_str == "sigma1":
-                density = xr.apply_ufunc(
-                    gsw.sigma1, self.sa, self.ct, dask="parallelized"
-                )
-            elif density_str == "sigma2":
-                density = xr.apply_ufunc(
-                    gsw.sigma2, self.sa, self.ct, dask="parallelized"
-                )
-            elif density_str == "sigma3":
-                density = xr.apply_ufunc(
-                    gsw.sigma3, self.sa, self.ct, dask="parallelized"
-                )
-            elif density_str == "sigma4":
-                density = xr.apply_ufunc(
-                    gsw.sigma4, self.sa, self.ct, dask="parallelized"
-                )
-            else:
-                return self.alpha, self.beta, None
-        else:
-            return self.alpha, self.beta, self.ds[density_str]
-
-        return self.alpha, self.beta, density.rename(density_str)
+        tend_arr = self.grid._ds[process]
+        
+        # Multiply salt tendency by 1000 to convert to g/m^2/s
+        if component=="salt":
+            tend_arr = tend_arr*1000.
+            
+        scalar = self.grid._ds[component_name]
+        if self.grid.axes['Z'].coords["center"] not in scalar.dims:
+            scalar = self.expand_surface_array_vertically(scalar, target_position="center")
+        
+        n_zcoords = len([
+            c for c in self.grid.axes['Z'].coords.values()
+            if c in self.grid._ds[process].dims
+        ])
+        
+        if n_zcoords == 0:
+            tend_arr = self.expand_surface_array_vertically(tend_arr, target_position="center")
+            tend_dict = {"layer_integrated_tendency": tend_arr}
+        elif n_zcoords > 0:
+            if (self.grid.axes['Z'].coords["outer"] in self.grid._ds[process].dims):
+                tend_dict = {"interfacial_flux": tend_arr}
+            elif (self.grid.axes['Z'].coords["center"] in self.grid._ds[process].dims):
+                tend_dict = {"layer_integrated_tendency": tend_arr}
+        
+        return {"scalar": scalar, **tend_dict}
 
     def rho_tend(self, term):
         """
-        Calculate the tendency of the locally-referenced potential density.
-        """
+        Get density tendency 'term' from underlying heat and salt tendencies. 
 
-        if "alpha" in vars(self) and "beta" in vars(self):
-            alpha, beta = self.alpha, self.beta
-        else:
-            (alpha, beta, _) = self.get_density()
+        Parameters
+        ----------
+        term : str
+            key for tendency variable in the xbudget_dict
+
+        Returns
+        -------
+        rho_tend_heat, rho_tend_salt
+            The two distinct components contributing to the overall density tendency.
+
+        Example
+        --------
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt.get_density()
+        >>> (rho_tend_heat, rho_tend_salt) = wmt.rho_tend("diffusion")
+        """
 
         # Either heat or salt tendency/flux may not be used
         rho_tend_heat, rho_tend_salt = None, None
 
-        dd = self.dd("heat", term)
-        if dd is not None:
-            heat_tend = calc_hldot_tendency(self.xgrid, self.dd("heat", term))
+        datadict = self.datadict("heat", term)
+        if datadict is not None:
+            heat_tend = calc_hlamdot_tendency(self.grid, datadict)
             # Density tendency due to heat flux (kg/s/m^2)
-            rho_tend_heat = -(alpha / self.Cp) * heat_tend
+            rho_tend_heat = -(self.grid._ds.alpha / self.cp) * heat_tend
 
-        dd = self.dd("salt", term)
-        if dd is not None:
-            salt_tend = calc_hldot_tendency(self.xgrid, self.dd("salt", term))
+        datadict = self.datadict("salt", term)
+        if datadict is not None:
+            salt_tend = calc_hlamdot_tendency(self.grid, datadict)
             # Density tendency due to salt/salinity (kg/s/m^2)
-            rho_tend_salt = beta * salt_tend
+            rho_tend_salt = self.grid._ds.beta * salt_tend
 
         return rho_tend_heat, rho_tend_salt
 
-    def calc_Fl(self, lstr, term):
+    def calc_hlamdot_and_lambda(self, lambda_name, term):
         """
-        Get transformation rate (* m/s) and corresponding scalar field of lambda
-        lstr: str
+        Get layer-integrated extensive tracer tendencies (* kg/m^2/s) and corresponding scalar field of lambda
+        
+        Parameters
+        ----------
+        lambda_name : str
             Specifies lambda
-        term: str
-            Specifies process term
+        term : str
+            key for tendency variable in the xbudget_dict
+            
+        Returns
+        ----------
+        hlamdot, lam : xr.DataArray, xr.DataArray
+
+        Example
+        --------
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> (hlamdot, lam) = wmt.calc_hlamdot_and_lambda("heat", "diffusion")
         """
+        
+        lam_var = self.get_lambda_var(lambda_name)
+        prebinned = all([
+            (c in self.grid.axes['Z'].coords.values())
+            for c in [f"{lam_var}_l", f"{lam_var}_i"]
+        ])
 
-        # Get F from tendency of heat (in W/m^2), lambda = theta
-        if lstr == "theta":
-            dd = self.dd("heat", term)
-            if dd is not None:
-                # Transformation rate (degC m/s)
-                F = calc_hldot_tendency(self.xgrid, dd) / (self.rho * self.Cp)
-                # Scalar field (degC)
-                l = dd["scalar"]["array"]
-                return F, l
+        # Get layer-integrated potential temperature tendency
+        # from tendency of heat (in W/m^2), lambda = temperature
+        if lambda_name == "heat":
+            datadict = self.datadict("heat", term)
+            if datadict is not None:
+                hlamdot = calc_hlamdot_tendency(self.grid, datadict) / self.cp
+                lam = datadict["scalar"] if not prebinned else self.grid._ds[f"{lam_var}_l"]
 
-        # Get F from tendency of salt (in g/s/m^2), lambda = salt
-        elif lstr == "salt":
-            dd = self.dd("salt", term)
-            if dd is not None:
-                # Transformation rate (g/kg m/s)
-                F = calc_hldot_tendency(self.xgrid, dd) / self.rho
-                # Scalar field (salinity units, psu, g/kg)
-                # TODO: Accurately define salinity field
-                l = dd["scalar"]["array"]
-                return F, l
+        # Get layer-integrated practical salinity tendency
+        # from tendency of salt (in g/s/m^2), lambda = salinity
+        elif lambda_name == "salt":
+            datadict = self.datadict("salt", term)
+            if datadict is not None:
+                hlamdot = calc_hlamdot_tendency(self.grid, datadict)
+                lam = datadict["scalar"] if not prebinned else self.grid._ds[f"{lam_var}_l"]
 
-        # Get F from tendencies of density (in kg/s/m^2), lambda = density
-        # Here we want to output 2 transformation rates:
+        # Get layer-integrated potential density tendencies (in kg/s/m^2)
+        # from heat and salt, lambda = density
+        # Here we want to output 2 separate components of the transformation rates:
         # (1) transformation due to heat tend, (2) transformation due to salt tend
-        elif lstr in self.lambdas("density"):
-            F = {}
+        elif lambda_name in self.lambdas("density"):
+            lam = self.get_density(lambda_name)
             rhos = self.rho_tend(term)
-            for idx, tend in enumerate(self.terms_dict.keys()):
-                # Transformation rate (kg/m^3 m/s)
-                F[tend] = rhos[idx]
-            # Scalar field (kg/m^3)
-            l = self.get_density(lstr)[2]
-            return F, l
+            hlamdot = {}
+            for idx, tend in enumerate(self.component_dict.keys()):
+                if rhos[idx] is not None:
+                    hlamdot[tend] = rhos[idx]*self.rho_ref # Is this correct for non-boussinesq case?
+                elif rhos[idx] is None:
+                    hlamdot[tend] = rhos[idx]
+                    
+            if prebinned and not(self.rebin):
+                lam = self.grid._ds[f"{lam_var}_l"]
+            elif lam_var in self.grid._ds:
+                lam = self.grid._ds[lam_var]
+        
+        else:
+            raise ValueError(f"{lambda_name} is not a supported lambda.")
+        
+        try:
+            return hlamdot, lam
+        
+        except NameError:
+            return None, None
 
-        return (None, None)
-
-    def calc_F_transformed(self, lstr, term, bins=None):
+    def transform_hlamdot_term(self, lambda_name, term, bins=None, mask=None, integrate=True):
         """
-        Transform to lambda space
+        Lazily compute extensive tendencies and transform them into lambda space
+        along the vertical ("Z") dimension.
+        
+        Parameters
+        ----------
+        lambda_name : str
+            Specifies lambda (e.g., 'heat', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
+        term : str
+            Specifies process term (e.g., 'boundary_forcing', 'vertical_diffusion', etc.). Use `self.available_processes()`
+            to see a list of all available terms.
+        bins : array like (default None)
+            np.array with lambda values specifying the edges for each bin. If not specified, array will be automatically
+            derived from the scalar field of lambda (e.g., temperature).
+        mask : xr.DataArray (default: None)
+            Boolean region mask (with same X and Y grid dimensions as `grid._ds` variables).
+            If None, generate an all-True mask for domain-wide calculations.
+        integrate : bool (default: True)
+            Whether to integrate the result over ("X", "Y") dimensions.
+        
+        Returns
+        -------
+        transformed_term : xarray.DataArray
+            Data array containing transformed tendencies.
+
+        See also
+        --------
+        self.transformations_from_hlamdot, self.integrate_transformations
         """
 
-        F, l = self.calc_Fl(lstr, term)
-        if F is None:
+        hlamdot, lam = self.calc_hlamdot_and_lambda(lambda_name, term)
+        if hlamdot is None:
             return
+
+        if self.method in ["default", "xhistogram"]:
+            if integrate:
+                dim = [
+                    self.grid.axes['X'].coords['center'],
+                    self.grid.axes['Y'].coords['center'],
+                    self.grid.axes['Z'].coords['center']
+                ]
+            else:
+                dim = [self.grid.axes['Z'].coords['center']]
+
+        if mask is not None:
+            if type(hlamdot) is dict:
+                hlamdot = {
+                    k:v.where(mask, 0.)
+                    if v is not None else None
+                    for k,v in hlamdot.items()
+                }
+            else:
+                hlamdot = hlamdot.where(mask, 0.)
 
         if bins is None:
-            bins = lbin_percentile(
-                l
-            )  # automatically find the right range based on the distribution in l
-
-        # Interpolate lambda to the cell interfaces
-        l_i = (
-            self.xgrid.interp(l, "Z", boundary="extrapolate")
-            .chunk({"lev_outer": -1})
-            .rename(l.name)
-        )
-
-        if lstr in self.lambdas("density"):
-            F_transformed = []
-            for tend in self.terms_dict.keys():
-                (tendcode, termcode) = self.process(tend, term)
-                if F[tend] is not None:
-                    F_transformed.append(
-                        (
-                            self.xgrid.transform(
-                                F[tend],
-                                "Z",
-                                target=bins,
-                                target_data=l_i,
-                                method="conservative",
-                            )
-                            / np.diff(bins)
-                        ).rename(termcode)
-                    )
-            F_transformed = xr.merge(F_transformed)
+            bins = self.infer_bins(lam)
+            
+        # If lambda is already a vertical coordinate, no need to use the 3D lambda for transformations
+        lam_var = self.get_lambda_var(lambda_name)
+        prebinned = all([(c in self.grid.axes['Z'].coords.values()) for c in [f"{lam_var}_l", f"{lam_var}_i"]])
+        if prebinned and not(self.rebin):
+            onedimensional_target = True
+            lam = lam.rename({lam.name: lam_var}).rename(lam_var)
+            lam_i = self.grid._ds[f"{lam_var}_i"]
+            self.method = "xgcm"
         else:
-            (tendcode, termcode) = self.process(
-                "salt" if lstr == "salt" else "heat", term
+            onedimensional_target = False
+            if self.grid.axes['Z'].coords['center'] in lam.dims:
+                lam_i = (
+                    self.grid.interp(lam, "Z", boundary="extend")
+                    .rename(f"{lam.name}_i")
+                )
+            else:
+                lam_i = lam.broadcast_like(self.grid._ds[self.grid.axes['Z'].coords['center']])
+
+        if lambda_name in self.lambdas("density"):
+            hlamdot_transformed = []
+            for tend in self.component_dict.keys():
+                (component_name, process) = self.process_names(tend, term)
+                if hlamdot[tend] is not None:
+                    bin_bounds = bins.values if isinstance(bins, xr.DataArray) else bins
+                    # xhistogram cases
+                    if (((self.method == "default") and integrate) or
+                        (self.method == "xhistogram")):
+                        hlamdot_transformed_component = histogram(
+                            lam,
+                            bins=[bin_bounds],
+                            dim=dim,
+                            weights=hlamdot[tend].fillna(0.),
+                            bin_dim_suffix="",
+                            # TEMPORARY FIX FOR https://github.com/xgcm/xhistogram/issues/16
+                            block_size=None
+                        ).rename({lam.name:f"{lam.name}_l_target"})
+                    # xgcm cases
+                    elif (((self.method == "default") and not integrate) or
+                          (self.method == "xgcm")):
+                        hlamdot_transformed_component = self.grid.transform(
+                            hlamdot[tend].fillna(0.),
+                            "Z",
+                            target=bin_bounds,
+                            target_data=lam_i,
+                            method="conservative",
+                        ).rename({lam_i.name: f"{lam.name}_l_target"})
+                        if integrate:
+                            hlamdot_transformed_component = hlamdot_transformed_component.sum(
+                                [self.grid.axes['X'].coords['center'],
+                                 self.grid.axes['Y'].coords['center']]
+                            )
+                    hlamdot_transformed.append(
+                        (hlamdot_transformed_component / np.diff(bin_bounds)).rename(f"{term}_{tend}")
+                    )
+            hlamdot_transformed = xr.merge(hlamdot_transformed)
+        else:
+            (component_name, process) = self.process_names(
+                "salt" if lambda_name == "salinity" else "heat", term
             )
-            F_transformed = (
-                self.xgrid.transform(
-                    F, "Z", target=bins, target_data=l_i, method="conservative"
-                )
-                / np.diff(bins)
-            ).rename(termcode)
-        return F_transformed
-
-    def calc_G(self, lstr, term=None, method="xhistogram", bins=None):
-        """
-        Water mass transformation (G)
-        """
-
-        # If term is not given, use all available process terms
-        if term is None:
-            Gs = []
-            for term in self.processes(False):
-                _G = self.calc_G(lstr, term, method, bins)
-                if _G is not None:
-                    Gs.append(_G)
-            return xr.merge(Gs)
-
-        if method == "xhistogram" and lstr in self.lambdas("density"):
-            F, l = self.calc_Fl(lstr, term)
-            if bins is None and l is not None:
-                bins = lbin_percentile(
-                    l
-                )  # automatically find the right range based on the distribution in l
-            G = []
-            for tend in self.terms_dict.keys():
-                (tendcode, termcode) = self.process(tend, term)
-                if termcode is not None and F[tend] is not None:
-                    _G = (
-                        (
-                            histogram(
-                                l.where(~np.isnan(F[tend])),
-                                bins=[bins],
-                                dim=["x", "y", "lev"],
-                                weights=(F[tend] * self.ds["areacello"]).where(
-                                    ~np.isnan(F[tend])
-                                ),
-                            )
-                            / np.diff(bins)
-                        )
-                        .rename({l.name + "_bin": l.name})
-                        .rename(termcode)
+            bin_bounds = bins.values if isinstance(bins, xr.DataArray) else bins
+            if (((self.method == "default") and integrate) or
+                (self.method == "xhistogram")):
+                hlamdot_transformed = histogram(
+                    lam,
+                    bins=[bin_bounds],
+                    dim=dim,
+                    weights=hlamdot.fillna(0.),
+                    bin_dim_suffix="",
+                    # TEMPORARY FIX FOR https://github.com/xgcm/xhistogram/issues/16
+                    block_size=None
+                ).rename({lam.name:f"{lam.name}_l_target"})
+            elif (((self.method == "default") and not integrate) or
+                  (self.method == "xgcm")):
+                hlamdot_transformed = self.grid.transform(
+                    hlamdot.fillna(0.),
+                    "Z",
+                    target=bin_bounds,
+                    target_data=lam_i,
+                    method="conservative"
+                ).rename({lam_i.name: f"{lam.name}_l_target"})
+                if integrate:
+                    hlamdot_transformed = hlamdot_transformed.sum(
+                        [self.grid.axes['X'].coords['center'],
+                         self.grid.axes['Y'].coords['center']]
                     )
-                    G.append(_G)
-            return xr.merge(G)
-        elif method == "xhistogram":
-            F, l = self.calc_Fl(lstr, term)
-            if bins is None and l is not None:
-                bins = lbin_percentile(
-                    l
-                )  # automatically find the right range based on the distribution in l
-            if F is not None and l is not None:
-                (tendcode, termcode) = self.process(
-                    "salt" if lstr == "salt" else "heat", term
-                )
-                G = (
-                    (
-                        histogram(
-                            l.where(~np.isnan(F)),
-                            bins=[bins],
-                            dim=["x", "y", "lev"],
-                            weights=(F * self.ds["areacello"]).where(~np.isnan(F)),
-                        )
-                        / np.diff(bins)
-                    )
-                    .rename({l.name + "_bin": l.name})
-                    .rename(termcode)
-                )
-                return G
-        elif method == "xgcm":
-            F_transformed = self.calc_F_transformed(lstr, term, bins=bins)
-            if F_transformed is not None and len(F_transformed):
-                G = (F_transformed * self.ds["areacello"]).sum(["x", "y"])
-                # rename dataarray only (not dataset)
-                if isinstance(G, xr.DataArray):
-                    return G.rename(F_transformed.name)
-                return G
-            return F_transformed
+            hlamdot_transformed = (
+                hlamdot_transformed / np.diff(bin_bounds)
+            ).rename(f"{term}")
+        return hlamdot_transformed
 
-    ### Helper function to groups terms based on tendencies (group_tend) and processes (group_process)
-    # Calculate the sum of grouped terms
-    def _sum(self, ds, newterm, terms):
-        das = []
-        for term in terms:
-            if term in ds:
-                das.append(ds[term])
-                del ds[term]
-        if len(das):
-            ds[newterm] = sum(das)
-
-    # group_process == True and group_tend == False
-    def _group_process(self, F):
-        if F is None:
-            return
-        self._sum(
-            F,
-            "forcing_heat",
-            [
-                "boundary_forcing_heat_tendency",
-                "frazil_heat_tendency",
-                "internal_heat_heat_tendency",
-            ],
-        )
-        self._sum(F, "diffusion_heat", ["opottempdiff", "opottemppmdiff"])
-        self._sum(F, "forcing_salt", ["boundary_forcing_salt_tendency"])
-        self._sum(F, "diffusion_salt", ["osaltdiff", "osaltpmdiff"])
-        return F
-
-    # group_process == True and group_tend == True
-    def _group_process_tend(self, F):
-        if F is None:
-            return
-        self._sum(
-            F,
-            "forcing",
-            [
-                "boundary_forcing_heat_tendency",
-                "frazil_heat_tendency",
-                "internal_heat_heat_tendency",
-                "boundary_forcing_salt_tendency",
-            ],
-        )
-        self._sum(
-            F,
-            "diffusion",
-            ["opottempdiff", "opottemppmdiff", "osaltdiff", "osaltpmdiff"],
-        )
-        return F
-
-    # group_process == False and group_tend == True
-    def _group_tend(self, F):
-        if F is None:
-            return
-        self._sum(
-            F,
-            "boundary_forcing",
-            ["boundary_forcing_heat_tendency", "boundary_forcing_salt_tendency"],
-        )
-        self._sum(F, "vertical_diffusion", ["opottempdiff", "osaltdiff"])
-        self._sum(F, "neutral_diffusion", ["opottemppmdiff", "osaltpmdiff"])
-        self._sum(F, "frazil_ice", ["frazil_heat_tendency"])
-        self._sum(F, "geothermal", ["internal_heat_heat_tendency"])
-        return F
-
-    def F(self, lstr, term=None, group_tend=True, group_process=False, **kwargs):
+    def transformations_from_hlamdot(self, lambda_name, term=None, bins=None, mask=None, integrate=True):
         """
-        Wrapper function for calc_F_transformed() to group terms based on tendency terms (heat, salt) and processes.
-        """
-
-        # If term is not given, use all available process terms
-        if term is None:
-            Fs = []
-            for term in self.processes(False):
-                _F = self.F(lstr, term, group_tend=False, group_process=False, **kwargs)
-                if _F is not None:
-                    Fs.append(_F)
-            F = xr.merge(Fs)
-        else:
-            # If term is given
-            F = self.calc_F_transformed(lstr, term, **kwargs)
-            if isinstance(F, xr.DataArray):
-                F = F.to_dataset()
-
-        if group_process == True and group_tend == False:
-            F = self._group_process(F)
-        elif group_process == True and group_tend == True:
-            F = self._group_process_tend(F)
-        elif group_process == False and group_tend == True:
-            F = self._group_tend(F)
-
-        if isinstance(F, xr.Dataset) and len(F) == 1:
-            return F[list(F.data_vars)[0]]
-        else:
-            return F
-
-    def G(self, lstr, *args, **kwargs):
-        """
-        Water mass transformation (G)
+        Lazily compute extensive tendencies, transform them into lambda space
+        along the vertical ("Z") dimension, and optionally integrate along the
+        horizontal dimensions ("X", "Y").
 
         Parameters
         ----------
-        lstr : str
-            Specifies lambda (e.g., 'theta', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
-        term : str, optional
-            Specifies process term (e.g., 'boundary forcing', 'vertical diffusion', etc.). Use `processes()` to list all available terms.
-        method : str {'xhistogram' (default), 'xgcm'}
-            The calculation can be either done with xhistogram (default) or the xgcm `transform`. If not specified, default will be used.
-        bins : array like, optional
-            np.array with lambda values specifying the edges for each bin. If not specidied, array will be automatically derived from
-            the scalar field of lambda (e.g., temperature).
-        group_tend : boolean, optional
-            Specify whether heat and salt tendencies are summed together (True) or kept separated (False). True by default.
-        group_process : boolean, optional
-            Specify whether process terms are summed to categories forcing and diffusion. False by default.
-
+        lambda_name : str
+            Specifies lambda (e.g., 'heat', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
+        term : str or list of str (default: None)
+            Specifies process term (e.g., 'boundary_forcing', 'vertical_diffusion', etc.). Use `self.available_processes()`
+            to list all terms. If None, defaults to list of all terms.
+        bins : array like (default None)
+            np.array with lambda values specifying the edges for each bin. If not specified, array will be automatically
+            derived from the scalar field of lambda (e.g., temperature).
+        mask : xr.DataArray (default: None)
+            Boolean region mask (with same X and Y grid dimensions as `grid._ds` variables).
+            If None, generate an all-True mask for domain-wide calculations.
+        integrate : bool (default: True)
+            Whether to integrate the result over ("X", "Y") dimensions.
+        
         Returns
         -------
-        G : {xarray.DataArray, xarray.Dataset}
-            The water mass transformation along lamba for each time. G is xarray.DataArray when term is specified and group_tend=True.
-            G is xarray.DataSet when multiple terms are included (term=None) or group_tend=False.
-        """
+        transformations : xarray.Dataset
+            Dataset containing components of water mass transformations, possibly grouped as
+            specified by the arguments.
 
-        # Extract default function args
-        group_process = kwargs.pop("group_process", False)
-        group_tend = kwargs.pop("group_tend", True)
+        See also
+        --------
+        self.integrate_transformations, self.map_transformations
+        """
+        
+        if isinstance(term, str):
+            terms = [term]
+        elif isinstance(term, list):
+            terms = term
+        elif term is None:
+            terms = self.available_processes()
+        else:
+            return
+            
+        wmts = []
+        for term in terms:
+            transformed_hlamdot = self.transform_hlamdot_term(lambda_name, term=term, bins=bins, mask=mask, integrate=integrate)
+            if transformed_hlamdot is not None:
+                wmts.append(-transformed_hlamdot)
+            else:
+                print(f"Process '{term}' for component {lambda_name} is unavailable.")
+        return xr.merge(wmts)
+
+    ### Helper function to groups terms based on density components (sum_components)
+    ### and physical processes (group_processes)
+    # Calculate the sum of grouped terms
+    def _sum_terms(self, ds_terms, newterm, terms):
+        das = []
+        if isinstance(ds_terms, xr.DataArray) and isinstance(terms, str):
+            if terms == ds_terms.name:
+                das.append(ds_terms[term])
+        elif isinstance(ds_terms, xr.Dataset):
+            for term in terms:
+                if term in ds_terms:
+                    das.append(ds_terms[term])
+        if len(das):
+            ds_terms[newterm] = sum(das)
+
+    def _group_processes(self, hlamdot):
+        if hlamdot is None:
+            return
+        for c in hlamdot.coords:
+            lambda_key = self.get_lambda_key(c.split("_")[0])
+            if (lambda_key is not None):
+                if lambda_key == "density":
+                    suffixes = ["_heat", "_salt", ""]
+                    budget = self.xbudget_dict["heat"]
+                else:
+                    suffixes = [""]
+                    budget = self.xbudget_dict[lambda_key]
+                for suffix in suffixes:
+                    if 'lhs' in budget:
+                        self._sum_terms(
+                            hlamdot,
+                            f"kinematic_transformation{suffix}",
+                            [f"{term}{suffix}" for term in budget['lhs'].keys()]
+                        )
+                    if 'rhs' in budget:
+                        self._sum_terms(
+                            hlamdot,
+                            f"material_transformation{suffix}",
+                            [f"{term}{suffix}" for term in budget['rhs'].keys()]
+                        )
+        return hlamdot
+
+    def _sum_components(self, hlamdot, group_processes = False):
+        if hlamdot is None:
+            return
+        
+        for proc in self.available_processes():
+            proc_list = [
+                f"{proc}{suffix}"
+                for suffix in ["_heat", "_salt"]
+            ]
+            self._sum_terms(
+                hlamdot,
+                proc,
+                proc_list
+            )
+        if group_processes:
+            for proc in [
+                "kinematic_transformation",
+                "material_transformation"
+            ]:
+                self._sum_terms(
+                    hlamdot,
+                    proc,
+                    [f"{proc}{suffix}" for suffix in ["_heat", "_salt"]]
+                )
+        return hlamdot
+
+    def map_transformations(
+        self,
+        lambda_name,
+        term=None,
+        group_processes=False,
+        sum_components=True,
+        bins=None,
+        mask=None
+        ):
+        """
+        Lazily compute column-wise water mass transformations.
+
+        Parameters
+        ----------
+        lambda_name : str
+            Specifies lambda (e.g., 'heat', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
+        term : str or list of str (default: None)
+            Specifies process term (e.g., 'boundary_forcing', 'vertical_diffusion', etc.). Use `self.available_processes()`
+            to list all terms. If None, defaults to list of all terms.
+        group_processes: bool (default: False)
+            Specify whether process terms are summed to categories forcing and diffusion.
+        sum_components : bool (default: True)
+            Specify whether heat and salt tendencies are summed together (True) or kept separated (False).
+        bins : array like (default None)
+            np.array with lambda values specifying the edges for each bin. If not specified, array will be automatically
+            derived from the scalar field of lambda (e.g., temperature).
+        mask : xr.DataArray (default: None)
+            Boolean region mask (with same X and Y grid dimensions as `grid._ds` variables).
+            If None, generate an all-True mask for domain-wide calculations.
+        
+        Returns
+        -------
+        transformations : xarray.Dataset
+            Dataset containing components of water mass transformations, possibly grouped as
+            specified by the arguments.
+
+        Example
+        --------
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt_rates = wmt.map_transformations("heat", term=["diffusion"])
+        
+        See also
+        --------
+        self.transformations_from_hlamdot, self.integrate_transformations
+        """
+        
         # call the base function
-        G = self.calc_G(lstr, *args, **kwargs)
+        transformations = self.transformations_from_hlamdot(
+            lambda_name,
+            term=term,
+            bins=bins,
+            mask=mask,
+            integrate=False,
+        )
 
         # process this function arguments
-        if group_process == True and group_tend == False:
-            G = self._group_process(G)
-        elif group_process == True and group_tend == True:
-            G = self._group_process_tend(G)
-        elif group_process == False and group_tend == True:
-            G = self._group_tend(G)
+        if sum_components:
+            transformations = self._sum_components(transformations, group_processes=group_processes)
+        if group_processes:
+            transformations = self._group_processes(transformations)
+            
+        return transformations
 
-        if isinstance(G, xr.Dataset) and len(G) == 1:
-            return G[list(G.data_vars)[0]]
-        else:
-            return G
-
-    def isosurface_mean(self, *args, ti=None, tf=None, dl=0.1, **kwargs):
+    def integrate_transformations(
+        self,
+        lambda_name,
+        term=None,
+        group_processes=False,
+        sum_components=True,
+        bins=None,
+        mask=None,
+        ):
         """
-        Mean transformation across lambda isosurface(s).
+        Lazily compute horizontally-integrated water mass transformations.
 
         Parameters
         ----------
-        lstr : str
-            Specifies lambda (e.g., 'theta', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
-        term : str, optional
-            Specifies process term (e.g., 'boundary forcing', 'vertical diffusion', etc.). Use `processes()` to list all available terms.
-        val : float or ndarray
-            Value(s) of lambda for which isosurface(s) is/are defined
-        ti : str
-            Starting date. ti=None by default.
-        tf : str
-            End date. tf=None by default.
-        dl : float
-            Width of lamba bin (delta) for which isosurface(s) is/are defined.
-        method : str {'xhistogram' (default), 'xgcm'}
-            The calculation can be either done with xhistogram (default) or the xgcm `transform`. If not specified, default will be used.
-        group_tend : boolean, optional
-            Specify whether heat and salt tendencies are summed together (True) or kept separated (False). True by default.
-        group_process : boolean, optional
-            Specify whether process terms are summed to categories forcing and diffusion. False by default.
-
+        lambda_name : str
+            Specifies lambda (e.g., 'heat', 'salt', 'sigma0', etc.). Use `lambdas()` for a list of available lambdas.
+        term : str or list of str (default: None)
+            Specifies process term (e.g., 'boundary_forcing', 'vertical_diffusion', etc.). Use `self.available_processes()`
+            to list all terms. If None, defaults to list of all terms.
+        group_processes: bool (default: False)
+            Specify whether process terms are summed to categories forcing and diffusion.
+        sum_components : bool (default: True)
+            Specify whether heat and salt tendencies are summed together (True) or kept separated (False).
+        bins : array like (default None)
+            np.array with lambda values specifying the edges for each bin. If not specified, array will be automatically
+            derived from the scalar field of lambda (e.g., temperature).
+        mask : xr.DataArray (default: None)
+            Boolean region mask (with same X and Y grid dimensions as `grid._ds` variables).
+            If None, generate an all-True mask for domain-wide calculations.
+        
         Returns
         -------
-        F_mean : {xarray.DataArray, xarray.Dataset}
-            Spatial field of mean transformation at a given (set of) lambda value(s). F_mean is xarray.DataArray when term is specified and group_tend=True.
-            F_mean is xarray.DataSet when multiple terms are included (term=None) or group_tend=False.
+        transformations : xarray.Dataset
+            Dataset containing components of water mass transformations, possibly grouped as
+            specified by the arguments.
+
+        Example
+        --------
+        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt_rates = wmt.map_transformations("heat", term=["diffusion"])
+
+        See also
+        --------
+        self.transformations_from_hlamdot, self.map_transformations
         """
+        
+        # call the base function
+        transformations = self.transformations_from_hlamdot(
+            lambda_name,
+            term=term,
+            bins=bins,
+            mask=mask,
+            integrate=True,
+        )
 
-        if len(args) == 3:
-            (lstr, term, val) = args
-        elif len(args) == 2:
-            (lstr, val) = args
-            term = None
-        else:
-            warnings.warn(
-                "isosurface_mean() requires arguments (lstr, term, val,...) or (lstr, val,...)"
-            )
-            return
-
-        if lstr not in self.lambdas("density"):
-            tendency = [k for k, v in self.lambdas_dict.items() if v[0] == lstr]
-            if len(tendency) == 1:
-                tendcode = self.terms_dict.get(tendency[0], None)
-            else:
-                warnings.warn("Tendency is not defined")
-                return
-        else:
-            tendcode = lstr
-
-        # Define bins based on val
-        kwargs["bins"] = lbin_define(np.min(val) - dl, np.max(val) + dl, dl)
-
-        # Calculate spatiotemporal field of transformation
-        F = self.F(lstr, term, **kwargs)
-        # TODO: Preferred method should be ndays_standard if calendar type is 'noleap'. Thus, avoiding to load the full time array
-        if (
-            "calendar_type" in self.ds.time.attrs
-            and self.ds.time.attrs["calendar_type"].lower() == "noleap"
-        ):
-            # Number of days in each month
-            n_years = len(np.unique(F.time.dt.year))
-            # Monthly data
-            dm = np.diff(F.indexes["time"].month)
-            udm = np.unique([m + 12 if m == -11 else m for m in dm])
-            if np.array_equal(udm, [1]):
-                ndays_standard = np.array(
-                    [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-                )
-                assert np.sum(ndays_standard) == 365
-                dt = xr.DataArray(
-                    ndays_standard[F.time.dt.month.values - 1],
-                    coords=[self.ds.time],
-                    dims=["time"],
-                    name="days per month",
-                )
-            # Annual data
-            dy = np.diff(F.indexes["time"].year)
-            udy = np.unique(dy)
-            if np.array_equal(udy, [1]):
-                dt = xr.DataArray(
-                    np.tile(365, n_years),
-                    coords=[self.ds.time],
-                    dims=["time"],
-                    name="days per year",
-                )
-        elif "time_bounds" in self.ds:
-            # Extract intervals (units are in ns)
-            deltat = self.ds.time_bounds[:, 1].values - self.ds.time_bounds[:, 0].values
-            # Convert intervals to days
-            dt = xr.DataArray(
-                deltat, coords=[self.ds.time], dims=["time"], name="days per month"
-            ) / np.timedelta64(1, "D")
-        elif "time_bnds" in self.ds:
-            # Extract intervals (units are in ns)
-            deltat = self.ds.time_bnds[:, 1].values - self.ds.time_bnds[:, 0].values
-            # Convert intervals to days
-            dt = xr.DataArray(
-                deltat, coords=[self.ds.time], dims=["time"], name="days per month"
-            ) / np.timedelta64(1, "D")
-        else:
-            # TODO: Create dt with ndays_standard but output warning that calendar_type is not specified.
-            # warnings.warn('Unsupported calendar type')
-            print("Unsupported calendar type", self.ds.time.attrs)
-            return
-
-        # Convert to dask array for lazy calculations
-        dt = dt.chunk(1)
-        F_mean = (
-            F.sel({tendcode: val}, method="nearest").sel(time=slice(ti, tf))
-            * dt.sel(time=slice(ti, tf))
-        ).sum("time") / dt.sel(time=slice(ti, tf)).sum("time")
-        return F_mean
+        # process this function arguments
+        if sum_components:
+            transformations = self._sum_components(transformations, group_processes=group_processes)
+        if group_processes:
+            transformations = self._group_processes(transformations)
+            
+        return transformations
