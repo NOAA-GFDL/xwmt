@@ -126,7 +126,7 @@ class swmt:
         # TODO: Add error message if lev and/or lev_outer in ds.
 
         # Create xgcm object with modified ds
-        self.xgrid = get_xgcm_grid_vertical(self.ds, metrics=True, periodic=False)
+        self.xgrid = get_xgcm_grid_vertical(self.ds, metrics=True, periodic=False, autoparse_metadata=False)
 
     # Helper function to get variable name for given tendency
     def tend(self, tendency):
