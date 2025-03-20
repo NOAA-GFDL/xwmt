@@ -30,7 +30,7 @@ dependencies = [
     "pandas",
     "xarray",
     "xhistogram",
-    "xgcm @ git+https://github.com/xgcm/xgcm.git@7492277de22ed1e677a6a7523b61b20643a98a77",
+    "xgcm @ git+https://github.com/xgcm/xgcm.git@master",
     "xbudget @ git+https://github.com/hdrake/xbudget.git@main",
 ]
 
