@@ -1,4 +1,4 @@
-name: testing
+name: test_env_xwmt
 channels:
   - conda-forge
   - defaults
