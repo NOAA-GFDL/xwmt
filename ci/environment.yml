@@ -9,11 +9,11 @@ dependencies:
   - numba
   - numpy
   - pandas
-  - pip
   - pylint
   - python==3.9
   - pytest
   - xarray
   - pip
+  - pip:
     - xgcm @ git+https://github.com/xgcm/xgcm.git@master
     - xhistogram
