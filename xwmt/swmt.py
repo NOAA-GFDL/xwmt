@@ -126,7 +126,7 @@ class swmt:
         # TODO: Add error message if lev and/or lev_outer in ds.
 
         # Create xgcm object with modified ds
-        self.xgrid = get_xgcm_grid_vertical(self.ds, metrics=True, periodic=False)
+        self.xgrid = get_xgcm_grid_vertical(self.ds, metrics=True, periodic=False, autoparse_metadata=False)
 
     # Helper function to get variable name for given tendency
     def tend(self, tendency):
@@ -398,7 +398,7 @@ class swmt:
         """Specify the percentile and number of the bins"""
         l_sample = l.isel(time=0).chunk({"y": -1, "x": -1})
         vmin, vmax = l_sample.quantile(percentile, dim=l_sample.dims)
-        return np.linspace(vmin, vmax, bins)
+        return np.linspace(vmin.values, vmax.values, bins)
 
     def calc_F_transformed(
         self, lstr, bins=None, mass="total", salt="total", heat="total", decompose=None
