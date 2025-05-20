@@ -48,6 +48,7 @@ class Helpers:
         budget_dict = {
             'mass': {
                 'lambda': None,
+                'thickness': 'dz',
                 'rhs': {},
                 'lhs': {}
             },
@@ -118,40 +119,40 @@ class Helpers:
 
     # Analytical point-wise water mass transformations
     def constant_plus_diffusion_local_wmt_dlamdz_constant(self, lam):
-        return np.sin(2*np.pi*lam) + 1.
+        return -(np.sin(2*np.pi*lam) + 1.)
 
     def constant_plus_diffusion_local_wmt_dlamdz_linear(self, lam):
-        return (np.sin(2*np.pi*np.sqrt(lam)) + 1.)/(2*np.sqrt(lam))
+        return -(np.sin(2*np.pi*np.sqrt(lam)) + 1.)/(2*np.sqrt(lam))
 
     def constant_plus_diffusion_local_wmt_dlamdz_overturning(self, lam):
-        return 1/(2*np.sqrt(1-lam))
+        return -1/(2*np.sqrt(1-lam))
 
     def differential_heating_local_wmt_dlamdz_vanishing(self, lam):
         sign = 2*np.float64(lam>0.5)-1
-        return sign/(2*np.sqrt(sign*(2*lam-1)))
+        return -sign/(2*np.sqrt(sign*(2*lam-1)))
 
     # Analytical layer-averaged water mass transformations
     def constant_plus_diffusion_layer_wmt_dlamdz_constant(self, lam_bins):
         def f(lam):
             return -np.cos(2*np.pi*lam)/(2*np.pi) + lam
-        return np.diff(f(lam_bins))/np.diff(lam_bins)
+        return -np.diff(f(lam_bins))/np.diff(lam_bins)
 
     def constant_plus_diffusion_layer_wmt_dlamdz_linear(self, lam_bins):
         def f(lam):
             return -np.cos(2*np.pi*np.sqrt(lam))/(2*np.pi) + np.sqrt(lam)
-        return np.diff(f(lam_bins))/np.diff(lam_bins)
+        return -np.diff(f(lam_bins))/np.diff(lam_bins)
 
     def constant_plus_diffusion_layer_wmt_dlamdz_overturning(self, lam_bins):
         def f(lam):
             return 1 - np.sqrt(1 - lam)
-        return np.diff(f(lam_bins))/np.diff(lam_bins)
+        return -np.diff(f(lam_bins))/np.diff(lam_bins)
 
     def differential_heating_layer_wmt_dlamdz_vanishing(self, lam_bins):
         def f(lam):
             sign = 2*np.float64(lam>0.5)-1
             u = 1 + sign*np.sqrt(sign*(2*lam-1))
             return sign*0.5*u
-        out = np.diff(f(lam_bins))/np.diff(lam_bins)
+        out = -np.diff(f(lam_bins))/np.diff(lam_bins)
         out[(lam_bins[:-1]<=0.5)&(0.5<=lam_bins[1:])] = np.nan
         return out
 
