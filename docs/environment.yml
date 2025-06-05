@@ -13,7 +13,4 @@ dependencies:
   - jupyter-sphinx
   - matplotlib
   - sphinx-book-theme
-  - gsw
   - pip
-  - pip:
-    - git+https://github.com/hdrake/xbudget.git@main
