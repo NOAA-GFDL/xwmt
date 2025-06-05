@@ -41,9 +41,9 @@ class WaterMass:
         rho_ref: float (default: 1035.0)
             Value of reference potential density, assuming Boussinesq approximation.
         t_var: str ("absolute" or "practical")
-            Does variable `t_name` represent "conservative" and "potential" temperature?
+            Does variable `t_name` represent "conservative", "potential", or "in-situ" temperature?
         s_var: str ("absolute" or "practical")
-            Does variable `s_name` represent "absolute" and "practical" temperature?
+            Does variable `s_name` represent "absolute" or "practical" salinity?
         """
         # Grid copy
         self.grid = xgcm.Grid(
@@ -156,7 +156,7 @@ class WaterMass:
         
         if (
             "alpha" not in self.grid._ds or "beta" not in self.grid._ds or self.teos10
-        ) and "p" not in vars(self):
+        ) and "p" not in self.grid._ds.data_vars:
             self.grid._ds['p'] = xr.apply_ufunc(
                 gsw.p_from_z, self.grid._ds.z, self.grid._ds.lat, 0, 0, dask="parallelized"
             )
@@ -196,6 +196,13 @@ class WaterMass:
             if self.t_var == "conservative":
                 self.grid._ds['ct'] = self.grid._ds[self.t_name]
             elif self.t_var == "potential":
+                self.grid._ds['ct'] = xr.apply_ufunc(
+                    gsw.CT_from_pt,
+                    self.grid._ds.sa,
+                    self.grid._ds[self.t_name],
+                    dask="parallelized"
+                )
+            elif self.t_var == "in-situ":
                 self.grid._ds['ct'] = xr.apply_ufunc(
                     gsw.CT_from_t,
                     self.grid._ds.sa,

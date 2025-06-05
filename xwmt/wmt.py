@@ -20,8 +20,10 @@ class WaterMassTransformations(WaterMass):
         teos10=True,
         cp=3992.0,
         rho_ref=1035.0,
+        t_var="conservative",
+        s_var="absolute",
         method="default",
-        rebin=False
+        rebin=False,
         ):
         """
         Create a new WaterMassTransformation object from an input xgcm.Grid and xbudget dictionary.
@@ -43,6 +45,10 @@ class WaterMassTransformations(WaterMass):
             Value of specific heat capacity.
         rho_ref : float (default: 1035.0, the MOM6 default value)
             Value of reference potential density. Note: WaterMass is assumed to be Boussinesq.
+        t_var: str ("conservative", "potential", or "in-situ")
+            Does variable `t_name` represent "conservative", "potential", or "in-situ" temperature?
+        s_var: str ("absolute" or "practical")
+            Does variable `s_name` represent "absolute" or "practical" salinity?
         method : str (default: "default")
             Method used for vertical transformations.
             Supported options: "default", "xhistogram", "xgcm".
@@ -70,7 +76,7 @@ class WaterMassTransformations(WaterMass):
         if "mass" in xbudget_dict:
             if "thickness" in xbudget_dict["mass"]:
                 kwargs["h_name"] = xbudget_dict["mass"]["thickness"]
-                
+
         super().__init__(
             grid,
             t_name=self.component_dict["heat"],
@@ -78,6 +84,8 @@ class WaterMassTransformations(WaterMass):
             teos10=teos10,
             cp=cp,
             rho_ref=rho_ref,
+            t_var=t_var,
+            s_var=s_var,
             **kwargs
         )
         
