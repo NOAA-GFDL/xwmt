@@ -41,7 +41,7 @@ jobs:
       - name: Set up conda environment
         run: |
           mamba env update -f ci/environment.yml
-          python -m pip install --no-deps -e .
+          python -m pip install -e .
       - name: Conda list information
         run: |
           conda env list
