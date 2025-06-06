@@ -1,4 +1,4 @@
-name: testing
+name: test_env_xwmt
 channels:
   - conda-forge
   - defaults
@@ -9,10 +9,10 @@ dependencies:
   - numba
   - numpy
   - pandas
-  - pip
   - pylint
-  - python==3.9
   - pytest
   - xarray
-  - xgcm==0.5.2
-  - xhistogram==0.3.1
+  - pip
+  - pip:
+    - xgcm @ git+https://github.com/xgcm/xgcm.git@master
+    - xhistogram
