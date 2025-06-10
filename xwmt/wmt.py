@@ -34,8 +34,11 @@ class WaterMassTransformations(WaterMass):
             Contains information about ocean model grid coordinates, metrics, and data variables.
         xbudget_dict : dict
             Nested dictionary containing information about lambda and tendency variable names.
-            See `xwmt/conventions` for examples of how this dictionary should be structured
-            or the `xbudget` package: https://github.com/hdrake/xbudget
+            See the `xbudget` package documentation (https://github.com/hdrake/xbudget) for how 
+            this dictionary should be structured. In particular, the `xbudget/conventions`
+            directory contains example `.yaml` files that can be read in as preset dictionaries.
+            The `MOM6.yaml` file provides a comprehensive description of the mass, heat, and salt
+            budgets in MOM6 (github.com/hdrake/xbudget/blob/main/xbudget/conventions/MOM6.yaml).
         mask : xr.DataArray (default: None)
             Boolean region mask (with same X and Y grid dimensions as `grid._ds` variables).
             If None, generate an all-True mask for domain-wide calculations.
