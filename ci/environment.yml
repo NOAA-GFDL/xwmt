@@ -1,18 +1,13 @@
 name: test_env_xwmt
 channels:
   - conda-forge
-  - defaults
 dependencies:
+  - python==3.11
   - black
-  - gsw
-  - netcdf4
-  - numba
-  - numpy
-  - pandas
   - pylint
   - pytest
-  - xarray
+  - netcdf4
+  - gsw
   - pip
   - pip:
-    - xgcm @ git+https://github.com/xgcm/xgcm.git@master
-    - xhistogram
+    - git+https://github.com/hdrake/xbudget.git@main

@@ -41,14 +41,11 @@ jobs:
       - name: Set up conda environment
         run: |
           mamba env update -f ci/environment.yml
-          python -m pip install --no-deps -e .
+          python -m pip install -e .
       - name: Conda list information
         run: |
           conda env list
           conda list
-      - name: Download test data
-        run: |
-          curl -o xwmt_test_data.nc ftp://ftp.gfdl.noaa.gov/perm/John.Krasting/xwmt/xwmt_test_data.20220810.nc
       - name: Test with pytest
         run: |
           pytest
