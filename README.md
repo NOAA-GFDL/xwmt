@@ -7,7 +7,7 @@ Quick Start Guide
 
 **Minimal installation within an existing environment**
 ```bash
-pip install git+https://github.com/NOAA-GFDL/xwmt.git@main
+pip install xwmt
 ```
 
 **Installing from scratch using `conda`**
