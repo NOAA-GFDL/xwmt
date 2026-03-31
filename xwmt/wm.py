@@ -4,6 +4,8 @@ import xgcm
 import gsw
 import warnings
 
+from xwmt.eos import alpha, beta, rho
+
 class WaterMass:
     """
     Stores water mass characteristics and supports methods for analyzing water masses on a numerical grid.
@@ -11,10 +13,10 @@ class WaterMass:
     def __init__(
         self,
         grid,
+        eos=None,
         t_name="thetao",
         s_name="so",
         h_name="thkcello",
-        teos10=True,
         cp=3992.0,
         rho_ref=1035.0,
         t_var="conservative",
@@ -27,15 +29,16 @@ class WaterMass:
         ----------
         grid: xgcm.Grid
             Contains information about ocean model grid coordinates, metrics, and data variables.
+        eos: str (default: "TEOS-10")
+            One of supported options:
+              - "TEOS-10"
+              - "Wright"
         t_name: str (default: "thetao")
             Name of conservative temperature variable [in degrees Celsius] in ds.
         s_name: str (default: "so")
             Name of absolute salinity variable [in g/kg] in ds.
         h_name: str (default: "thkcello")
             Name of thickness variable [in m] in ds.
-        teos10 : boolean (default: True)
-            Get expansion/contraction coefficients from the Thermodynamic Equation Of Seawater - 2010 (TEOS-10),
-            unless "alpha" and "beta" variables already present in `grid._ds`.
         cp: float (default: 3992.0)
             Value of specific heat capacity.
         rho_ref: float (default: 1035.0)
@@ -57,12 +60,12 @@ class WaterMass:
             },
             autoparse_metadata=False
         )
+        self.eos = eos
         self.t_name = t_name
         self.t_var = t_var
         self.s_name = s_name
         self.s_var = s_var
         self.h_name = h_name
-        self.teos10 = teos10
         self.cp = cp
         self.rho_ref = rho_ref
         
@@ -124,13 +127,14 @@ class WaterMass:
             -self.grid.cumsum(self.grid.Z_metrics["center"], "Z", to="outer"),
             0.
         ).chunk({self.grid.axes["Z"].coords["outer"]: -1})
-        
+
     def get_density(self, density_name="rho"):
         """
         Derive density variables from layer temperature, salinity, and thickness,
         and add them to the dataset (if not already present).
-        Uses the TEOS10 algorithm from the `gsw` package by default, unless "alpha"
-        and "beta" variables are already provided in `self.grid._ds`.
+        Uses the specified Equation of State (`eos`) to compute density.
+        If `eos = None`, then "alpha" and "beta" variables are assumed to
+        already be provided in `self.grid._ds`.
 
         Parameters
         ----------
@@ -154,8 +158,9 @@ class WaterMass:
             raise ValueError(f"ds must include thickness variable\
             defined by kwarg h_name (default: {self.h_name}).")
         
+        # Compute derived pressure pressure
         if (
-            "alpha" not in self.grid._ds or "beta" not in self.grid._ds or self.teos10
+            "alpha" not in self.grid._ds or "beta" not in self.grid._ds or (self.eos is not None)
         ) and "p" not in self.grid._ds.data_vars:
             self.grid._ds['p'] = xr.apply_ufunc(
                 gsw.p_from_z, self.grid._ds.z, self.grid._ds.lat, 0, 0, dask="parallelized"
@@ -179,36 +184,38 @@ class WaterMass:
         
         # Prognostic temperature and salinity are, by default, interpreted as
         # conservative temperature and absolute salinity (following McDougall et al. 2021).
-        if self.teos10 and "sa" not in self.grid._ds:
-            if self.s_var == "absolute":
-                self.grid._ds['sa'] = self.grid._ds[self.s_name]
-            elif self.s_var == "practical":
-                self.grid._ds['sa'] = xr.apply_ufunc(
-                    gsw.SA_from_SP,
-                    self.grid._ds[self.s_name],
-                    self.grid._ds.p,
-                    self.grid._ds.lon,
-                    self.grid._ds.lat,
-                    dask="parallelized",
-                )
-        if self.teos10 and "ct" not in self.grid._ds:
-            if self.t_var == "conservative":
-                self.grid._ds['ct'] = self.grid._ds[self.t_name]
-            elif self.t_var == "potential":
-                self.grid._ds['ct'] = xr.apply_ufunc(
-                    gsw.CT_from_pt,
-                    self.grid._ds.sa,
-                    self.grid._ds[self.t_name],
-                    dask="parallelized"
-                )
-            elif self.t_var == "in-situ":
-                self.grid._ds['ct'] = xr.apply_ufunc(
-                    gsw.CT_from_t,
-                    self.grid._ds.sa,
-                    self.grid._ds[self.t_name],
-                    self.grid._ds.p,
-                    dask="parallelized"
-                )
+        if (self.eos == "TEOS-10"):
+            if "ct" not in self.grid._ds:
+                if self.t_var == "conservative":
+                    self.grid._ds['ct'] = self.grid._ds[self.t_name]
+                elif self.t_var == "potential":
+                    self.grid._ds['ct'] = xr.apply_ufunc(
+                        gsw.CT_from_pt,
+                        self.grid._ds.sa,
+                        self.grid._ds[self.t_name],
+                        dask="parallelized"
+                    )
+                elif self.t_var == "in-situ":
+                    self.grid._ds['ct'] = xr.apply_ufunc(
+                        gsw.CT_from_t,
+                        self.grid._ds.sa,
+                        self.grid._ds[self.t_name],
+                        self.grid._ds.p,
+                        dask="parallelized"
+                    )
+            if "sa" not in self.grid._ds:
+                if self.s_var == "absolute":
+                    self.grid._ds['sa'] = self.grid._ds[self.s_name]
+                elif self.s_var == "practical":
+                    self.grid._ds['sa'] = xr.apply_ufunc(
+                        gsw.SA_from_SP,
+                        self.grid._ds[self.s_name],
+                        self.grid._ds.p,
+                        self.grid._ds.lon,
+                        self.grid._ds.lat,
+                        dask="parallelized",
+                    )
+
         if not self.teos10 and ("sa" not in vars(self) or "ct" not in vars(self)):
             self.grid._ds['sa'] = self.grid._ds[self.s_name]
             self.grid._ds['ct'] = self.grid._ds[self.t_name]

@@ -25,7 +25,6 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "gsw",
     "numba",
     "numpy",
     "bottleneck",
@@ -34,6 +33,9 @@ dependencies = [
     "xhistogram",
     "xgcm >= 0.9.0",
     "xbudget >= 0.6.0",
+    "fastjmd95",
+    "momlevel",
+    "gsw",
 ]
 
 [project.urls]
