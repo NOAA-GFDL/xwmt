@@ -54,9 +54,9 @@ jobs:
           pytest -v --cov=xwmt --cov-report=xml --cov-report=term-missing
 
   lint:
-    # Non-blocking style/quality reporting. The codebase is not yet black-clean,
-    # so these are advisory (continue-on-error) until a one-time `black .` lands;
-    # flip to blocking by removing continue-on-error afterwards.
+    # `black` is a blocking format gate (the tree is black-clean). `pylint` is
+    # advisory for now (--exit-zero) until the score is raised; drop --exit-zero
+    # to make it blocking.
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source
@@ -68,8 +68,6 @@ jobs:
       - name: Install linters
         run: pip install black pylint
       - name: black --check
-        continue-on-error: true
         run: black --check --diff xwmt/
       - name: pylint
-        continue-on-error: true
         run: pylint xwmt/ --rcfile=.pylintrc --exit-zero

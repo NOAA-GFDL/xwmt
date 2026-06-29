@@ -4,6 +4,7 @@ path that previously raised a NameError/TypeError, validated incorrectly, or was
 silently ignored. These paths build a tiny single-column synthetic grid so they
 run without the downloaded Baltic dataset.
 """
+
 import warnings
 
 import numpy as np
@@ -17,25 +18,37 @@ import xwmt
 def minimal_grid():
     """A tiny single-column grid with thickness, a tracer, an area metric, and a mask."""
     ds = xr.Dataset()
-    ds = ds.assign_coords({
-        'z_i': xr.DataArray(np.array([0., 1.]), dims=("z_i",)),
-        'z_l': xr.DataArray(np.array([0.5]), dims=("z_l",)),
-    })
-    ds['dz'] = xr.DataArray(np.ones((1,)), dims=("z_l",))
-    ds['temperature'] = xr.DataArray(np.array([2.0]), dims=("z_l",))
-    ds['so'] = xr.DataArray(np.array([35.0]), dims=("z_l",))
-    ds = ds.expand_dims(dim=('x', 'y')).assign_coords({
-        'x': xr.DataArray([1.], dims=('x',)),
-        'y': xr.DataArray([1.], dims=('y',)),
-    })
-    ds = ds.assign_coords({
-        'rA': xr.DataArray([[1.]], dims=('x', 'y')),
-        'lat': xr.DataArray([[1.]], dims=('x', 'y')),
-    })
-    ds['wet'] = xr.DataArray([[1.]], dims=('x', 'y'))
-    coords = {'X': {'center': 'x'}, 'Y': {'center': 'y'}, 'Z': {'center': 'z_l', 'outer': 'z_i'}}
-    metrics = {('X', 'Y'): ['rA']}
-    return xgcm.Grid(ds, coords=coords, metrics=metrics, periodic=False, autoparse_metadata=False)
+    ds = ds.assign_coords(
+        {
+            "z_i": xr.DataArray(np.array([0.0, 1.0]), dims=("z_i",)),
+            "z_l": xr.DataArray(np.array([0.5]), dims=("z_l",)),
+        }
+    )
+    ds["dz"] = xr.DataArray(np.ones((1,)), dims=("z_l",))
+    ds["temperature"] = xr.DataArray(np.array([2.0]), dims=("z_l",))
+    ds["so"] = xr.DataArray(np.array([35.0]), dims=("z_l",))
+    ds = ds.expand_dims(dim=("x", "y")).assign_coords(
+        {
+            "x": xr.DataArray([1.0], dims=("x",)),
+            "y": xr.DataArray([1.0], dims=("y",)),
+        }
+    )
+    ds = ds.assign_coords(
+        {
+            "rA": xr.DataArray([[1.0]], dims=("x", "y")),
+            "lat": xr.DataArray([[1.0]], dims=("x", "y")),
+        }
+    )
+    ds["wet"] = xr.DataArray([[1.0]], dims=("x", "y"))
+    coords = {
+        "X": {"center": "x"},
+        "Y": {"center": "y"},
+        "Z": {"center": "z_l", "outer": "z_i"},
+    }
+    metrics = {("X", "Y"): ["rA"]}
+    return xgcm.Grid(
+        ds, coords=coords, metrics=metrics, periodic=False, autoparse_metadata=False
+    )
 
 
 FULL_BUDGET = {

@@ -4,10 +4,12 @@ import xgcm
 import gsw
 import warnings
 
+
 class WaterMass:
     """
     Stores water mass characteristics and supports methods for analyzing water masses on a numerical grid.
     """
+
     def __init__(
         self,
         grid,
@@ -19,7 +21,7 @@ class WaterMass:
         rho_ref=1035.0,
         t_var="conservative",
         s_var="absolute",
-        ):
+    ):
         """
         Create a new WaterMass object from an input xgcm.Grid instance.
 
@@ -71,11 +73,11 @@ class WaterMass:
             self._interpolate_thickness_to_interfaces()
             self.Z_metrics = {
                 "center": self.grid._ds[self.h_name],
-                "outer": self.grid._ds[f'{self.h_name}_i'],
+                "outer": self.grid._ds[f"{self.h_name}_i"],
             }
         elif "Z" not in self.grid.axes:
             self.grid._ds["z_l"] = xr.DataArray([0.5], dims=("z_l",))
-            self.grid._ds["z_i"] = xr.DataArray([0, 1.], dims=("z_i",))
+            self.grid._ds["z_i"] = xr.DataArray([0, 1.0], dims=("z_i",))
             self.grid._ds[f"{self.h_name}"] = xr.DataArray([1], dims=("z_l",))
             self.grid._ds[f"{self.h_name}_i"] = xr.DataArray([0.5, 0.5], dims=("z_i",))
             self.grid = _rebuild_grid(
@@ -94,54 +96,59 @@ class WaterMass:
         needed to estimate depths of layer centers and compute surface flux divergences.
         """
         zc, zi = self._zc, self._zi
-        Z_center_extended = np.concatenate((
-            self.grid._ds[zi][np.array([0])].values,
-            self.grid._ds[zc].values,
-            self.grid._ds[zi][np.array([-1])].values
-        ))
+        Z_center_extended = np.concatenate(
+            (
+                self.grid._ds[zi][np.array([0])].values,
+                self.grid._ds[zc].values,
+                self.grid._ds[zi][np.array([-1])].values,
+            )
+        )
         with warnings.catch_warnings():
-            warnings.simplefilter(action='ignore', category=FutureWarning)
+            warnings.simplefilter(action="ignore", category=FutureWarning)
             if "time" in self.grid._ds:
                 time_attrs = self.grid._ds.time.attrs.copy()
-            self.grid._ds[f'{self.h_name}_i'] = self.grid.transform(
-                self.grid._ds[self.h_name].fillna(0.),
+            self.grid._ds[f"{self.h_name}_i"] = self.grid.transform(
+                self.grid._ds[self.h_name].fillna(0.0),
                 "Z",
                 Z_center_extended,
                 method="conservative",
             ).assign_coords({zi: self.grid._ds[zi].values})
         if "time" in self.grid._ds:
-            self.grid._ds.time.attrs = time_attrs # For some reason these are not preserved by default
+            self.grid._ds.time.attrs = (
+                time_attrs  # For some reason these are not preserved by default
+            )
 
     def _compute_depth_coordinates(self):
         """Compute layer-center depth `z` and interface depth `z_interface` from Z_metrics."""
-        self.grid._ds['z'] = (
-            -self.grid.cumsum(self.Z_metrics["outer"], "Z")
-        ).chunk({self._zc: -1})
-        self.grid._ds['z_interface'] = xr.where(
-            self.grid.axes["Z"].coords["outer"] != self.grid.axes["Z"].coords["outer"][0],
+        self.grid._ds["z"] = (-self.grid.cumsum(self.Z_metrics["outer"], "Z")).chunk(
+            {self._zc: -1}
+        )
+        self.grid._ds["z_interface"] = xr.where(
+            self.grid.axes["Z"].coords["outer"]
+            != self.grid.axes["Z"].coords["outer"][0],
             -self.grid.cumsum(self.Z_metrics["center"], "Z", to="outer"),
-            0.
+            0.0,
         ).chunk({self._zi: -1})
 
     @property
     def _xc(self):
         """Name of the X (zonal) center coordinate."""
-        return self.grid.axes['X'].coords['center']
+        return self.grid.axes["X"].coords["center"]
 
     @property
     def _yc(self):
         """Name of the Y (meridional) center coordinate."""
-        return self.grid.axes['Y'].coords['center']
+        return self.grid.axes["Y"].coords["center"]
 
     @property
     def _zc(self):
         """Name of the Z (vertical) center coordinate."""
-        return self.grid.axes['Z'].coords['center']
+        return self.grid.axes["Z"].coords["center"]
 
     @property
     def _zi(self):
         """Name of the Z (vertical) outer/interface coordinate."""
-        return self.grid.axes['Z'].coords['outer']
+        return self.grid.axes["Z"].coords["outer"]
 
     @property
     def _horizontal_dims(self):
@@ -158,7 +165,7 @@ class WaterMass:
         Parameters
         ----------
         density_name: str (default: "rho")
-            Name of density variable. Supported density variables are: 
+            Name of density variable. Supported density variables are:
             "rho" (in-situ), "sigma0", "sigma1", "sigma2", "sigma3", "sigma4"
             (corresponding to functions of the same name in the `gsw` package).
 
@@ -166,33 +173,44 @@ class WaterMass:
         -------
         xr.DataArray
         """
-        
+
         if self.t_name not in self.grid._ds:
-            raise ValueError(f"ds must include temperature variable\
-            defined by kwarg t_name (default: {self.t_name}).")
+            raise ValueError(
+                f"ds must include temperature variable\
+            defined by kwarg t_name (default: {self.t_name})."
+            )
         if self.s_name not in self.grid._ds:
-            raise ValueError(f"ds must include salinity variable\
-            defined by kwarg s_name (default: {self.s_name}).")
+            raise ValueError(
+                f"ds must include salinity variable\
+            defined by kwarg s_name (default: {self.s_name})."
+            )
         if self.h_name not in self.grid._ds:
-            raise ValueError(f"ds must include thickness variable\
-            defined by kwarg h_name (default: {self.h_name}).")
-        
+            raise ValueError(
+                f"ds must include thickness variable\
+            defined by kwarg h_name (default: {self.h_name})."
+            )
+
         if (
             "alpha" not in self.grid._ds or "beta" not in self.grid._ds or self.teos10
         ) and "p" not in self.grid._ds.data_vars:
-            self.grid._ds['p'] = xr.apply_ufunc(
-                gsw.p_from_z, self.grid._ds.z, self.grid._ds.lat, 0, 0, dask="parallelized"
+            self.grid._ds["p"] = xr.apply_ufunc(
+                gsw.p_from_z,
+                self.grid._ds.z,
+                self.grid._ds.lat,
+                0,
+                0,
+                dask="parallelized",
             )
 
         if "sigma" in density_name:
             z_ref = density_name.replace("sigma", "")
             try:
-                z_ref = -float(z_ref)*1000
+                z_ref = -float(z_ref) * 1000
             except ValueError as e:
                 raise ValueError(
                     f"`density_name = {density_name}` is not of form 'sigmaX' where 'X' is a number."
                 ) from e
-            
+
             p_ref = xr.apply_ufunc(
                 gsw.p_from_z, z_ref, self.grid._ds.lat, 0, 0, dask="parallelized"
             )
@@ -200,15 +218,17 @@ class WaterMass:
             z_ref = self.grid._ds.z
             p_ref = self.grid._ds.p
         else:
-            raise NameError(f"`density_name = {density_name}` is not a supported option.")
-        
+            raise NameError(
+                f"`density_name = {density_name}` is not a supported option."
+            )
+
         # Prognostic temperature and salinity are, by default, interpreted as
         # conservative temperature and absolute salinity (following McDougall et al. 2021).
         if self.teos10 and "sa" not in self.grid._ds:
             if self.s_var == "absolute":
-                self.grid._ds['sa'] = self.grid._ds[self.s_name]
+                self.grid._ds["sa"] = self.grid._ds[self.s_name]
             elif self.s_var == "practical":
-                self.grid._ds['sa'] = xr.apply_ufunc(
+                self.grid._ds["sa"] = xr.apply_ufunc(
                     gsw.SA_from_SP,
                     self.grid._ds[self.s_name],
                     self.grid._ds.p,
@@ -218,35 +238,39 @@ class WaterMass:
                 )
         if self.teos10 and "ct" not in self.grid._ds:
             if self.t_var == "conservative":
-                self.grid._ds['ct'] = self.grid._ds[self.t_name]
+                self.grid._ds["ct"] = self.grid._ds[self.t_name]
             elif self.t_var == "potential":
-                self.grid._ds['ct'] = xr.apply_ufunc(
+                self.grid._ds["ct"] = xr.apply_ufunc(
                     gsw.CT_from_pt,
                     self.grid._ds.sa,
                     self.grid._ds[self.t_name],
-                    dask="parallelized"
+                    dask="parallelized",
                 )
             elif self.t_var == "in-situ":
-                self.grid._ds['ct'] = xr.apply_ufunc(
+                self.grid._ds["ct"] = xr.apply_ufunc(
                     gsw.CT_from_t,
                     self.grid._ds.sa,
                     self.grid._ds[self.t_name],
                     self.grid._ds.p,
-                    dask="parallelized"
+                    dask="parallelized",
                 )
         if not self.teos10 and ("sa" not in self.grid._ds or "ct" not in self.grid._ds):
-            self.grid._ds['sa'] = self.grid._ds[self.s_name]
-            self.grid._ds['ct'] = self.grid._ds[self.t_name]
+            self.grid._ds["sa"] = self.grid._ds[self.s_name]
+            self.grid._ds["ct"] = self.grid._ds[self.t_name]
 
         # Calculate thermal expansion coefficient alpha (1/K) at reference pressure
         if "alpha" not in self.grid._ds:
-            self.grid._ds['alpha'] = xr.apply_ufunc(
-                gsw.alpha, self.grid._ds.sa, self.grid._ds.ct, p_ref, dask="parallelized"
+            self.grid._ds["alpha"] = xr.apply_ufunc(
+                gsw.alpha,
+                self.grid._ds.sa,
+                self.grid._ds.ct,
+                p_ref,
+                dask="parallelized",
             )
 
         # Calculate the haline contraction coefficient beta (kg/g) at reference pressure
         if "beta" not in self.grid._ds:
-            self.grid._ds['beta'] = xr.apply_ufunc(
+            self.grid._ds["beta"] = xr.apply_ufunc(
                 gsw.beta, self.grid._ds.sa, self.grid._ds.ct, p_ref, dask="parallelized"
             )
 
@@ -258,15 +282,15 @@ class WaterMass:
                     self.grid._ds.sa,
                     self.grid._ds.ct,
                     self.grid._ds.p,
-                    dask="parallelized"
+                    dask="parallelized",
                 ).rename(density_name)
-            
+
             elif "sigma" in density_name:
                 self.grid._ds[density_name] = xr.apply_ufunc(
                     getattr(gsw, density_name),
                     self.grid._ds.sa,
                     self.grid._ds.ct,
-                    dask="parallelized"
+                    dask="parallelized",
                 ).rename(density_name)
 
         return self.grid._ds[density_name]
@@ -275,9 +299,9 @@ class WaterMass:
         """
         Return the first vertical level (starting from the relevant boundary)
         whose thickness exceeds `min_thickness`.
-    
+
         Assumes the native Z index increases downward (surface -> bottom).
-    
+
         Parameters
         ----------
         position : {"center", "outer"}
@@ -287,7 +311,7 @@ class WaterMass:
             True: search from seafloor upward ("incrop").
         min_thickness : float
             Default: 1e-6. Minimum layer thickness required to count as the first "real" cell.
-    
+
         Returns
         -------
         xr.DataArray
@@ -300,27 +324,28 @@ class WaterMass:
         # Native order is surface -> bottom. For incrop, reverse to bottom -> surface.
         z_native = self.grid._ds[z_coord]
         z_order = z_native[::-1] if incrop else z_native
-    
+
         h_ord = h.sel({z_coord: z_order})
-    
+
         thick = h_ord > min_thickness
-    
+
         # True only at the first thick cell in boundary->interior order
         first = (thick.cumsum(z_coord) == 1) & thick
-    
+
         out = first.astype("int8").idxmax(z_coord)
-    
+
         # Mask columns where no thick cell exists
         return out.where(thick.any(z_coord))
 
-        
-    def sel_outcrop_lev(self, da, incrop=False, min_thickness=1e-6, position="center", **kwargs):
+    def sel_outcrop_lev(
+        self, da, incrop=False, min_thickness=1e-6, position="center", **kwargs
+    ):
         """
         Select `da` at the first vertical level (starting from the relevant boundary)
         whose thickness exceeds `min_thickness`.
-    
+
         Assumes the native Z index increases downward (surface -> bottom).
-    
+
         Parameters
         ----------
         da : xr.DataArray
@@ -334,17 +359,17 @@ class WaterMass:
             Vertical grid position for the coordinate/metric.
         **kwargs : dict
             Passed to `.sel(**kwargs)` on the thickness metric (and used to validate dims).
-    
+
         Returns
         -------
         xr.DataArray
             `da` selected at the diagnosed level, masked where no level exceeds `min_thickness`.
         """
         z_coord = self.grid.axes["Z"].coords[position]
-    
+
         # Thickness metric, subset as requested
         h = self.Z_metrics[position].sel(**kwargs)
-    
+
         missing_dims = set(h.dims) - set(da.dims)
         if missing_dims:
             raise ValueError(
@@ -355,26 +380,26 @@ class WaterMass:
         # Order so the relevant boundary is first along z (native is surface->bottom)
         z_native = self.grid._ds[z_coord]
         z_order = z_native[::-1] if incrop else z_native
-    
+
         h_ord = h.sel({z_coord: z_order})
         da_ord = da.sel({z_coord: z_order})
-    
+
         thick = h_ord > min_thickness
-    
+
         # First thick cell in this boundary->interior ordering
         first = (thick.cumsum(z_coord) == 1) & thick
         lev = first.astype("int8").idxmax(z_coord)
-    
+
         has_thick = thick.any(z_coord)
-    
+
         # Select from the *original* `da` (order doesn’t matter once we have coord values)
         return da.sel({z_coord: lev}).where(has_thick)
-    
+
     def expand_surface_array_vertically(self, da_surf, target_position="outer"):
         """
         Expand surface xr.DataArray (with no "Z"-dimension coordinate) in the vertical,
         filling with zeros in all layers except the one that outcrops.
-        
+
         Parameters
         ----------
         da_surf: xarray.DataArray
@@ -383,20 +408,16 @@ class WaterMass:
             Position of the desired vertical coordinate in the `self.grid` instance of `xgcm.Grid`.
             Default: "outer". Other supported option is "center".
         """
-        z_coord = self.grid.axes['Z'].coords[target_position]
-        return (
-            da_surf.expand_dims({z_coord: self.grid._ds[z_coord]})
-            .where(
-                self.grid._ds[z_coord] ==
-                self.get_outcrop_lev(position=target_position),
-                0.
-            )
+        z_coord = self.grid.axes["Z"].coords[target_position]
+        return da_surf.expand_dims({z_coord: self.grid._ds[z_coord]}).where(
+            self.grid._ds[z_coord] == self.get_outcrop_lev(position=target_position),
+            0.0,
         )
 
-    def infer_bins(self, da, percentiles=[0., 1.], nbins=100, surface=False):
+    def infer_bins(self, da, percentiles=[0.0, 1.0], nbins=100, surface=False):
         """
         Specify bins based on the distribution of `da`, excluding outliers.
-        
+
         Parameters
         ----------
         da: xarray.DataArray
@@ -410,8 +431,8 @@ class WaterMass:
             Default: False. If True, compute percentiles only from the outcropping layer of `da`.
         """
         if surface:
-            da=self.sel_outcrop_lev(da)
-        if percentiles != [0., 1.]:
+            da = self.sel_outcrop_lev(da)
+        if percentiles != [0.0, 1.0]:
             vmin, vmax = da.quantile(percentiles, dim=da.dims)
         else:
             vmin, vmax = da.min(), da.max()
@@ -420,7 +441,7 @@ class WaterMass:
     def zonal_mean(self, da, oceanmask_name="wet"):
         """
         Compute area-weighted zonal mean (along `X` grid axis).
-        
+
         Parameters
         ----------
         da: xarray.DataArray
@@ -428,11 +449,12 @@ class WaterMass:
         oceanmask_name: str
             Name of ocean mask xr.DataArray in `self.grid._ds`. Default: "wet".
         """
-        x_name = self.grid.axes['X'].coords['center']
-        area = self.grid.get_metric(da, ['X', 'Y'])
+        x_name = self.grid.axes["X"].coords["center"]
+        area = self.grid.get_metric(da, ["X", "Y"])
         num = (da * area * self.grid._ds[oceanmask_name]).sum(dim=x_name)
         denom = (area * self.grid._ds[oceanmask_name]).sum(dim=x_name)
         return num / denom
+
 
 def _rebuild_grid(grid, extra_coords=None, extra_boundary=None, deep=False):
     """
@@ -464,6 +486,7 @@ def _rebuild_grid(grid, extra_coords=None, extra_boundary=None, deep=False):
         },
         autoparse_metadata=False,
     )
+
 
 def add_gridcoords(grid, coords, boundary):
     new_grid = _rebuild_grid(grid, extra_coords=coords, extra_boundary=boundary)
