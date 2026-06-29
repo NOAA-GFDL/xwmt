@@ -36,8 +36,8 @@ dependencies = [
 [project.optional-dependencies]
 # Optional accelerator for xarray reductions (bottleneck). Not imported directly.
 accel = ["bottleneck"]
-test = ["pytest", "netcdf4", "pooch"]
-dev = ["black", "pylint", "pytest", "netcdf4", "pooch"]
+test = ["pytest", "netcdf4"]
+dev = ["black", "pylint", "pytest", "netcdf4"]
 
 [project.urls]
 "Homepage" = "https://github.com/NOAA-GFDL/xwmt"
