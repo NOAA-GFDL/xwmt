@@ -40,23 +40,13 @@ class WaterMass:
             Value of specific heat capacity.
         rho_ref: float (default: 1035.0)
             Value of reference potential density, assuming Boussinesq approximation.
-        t_var: str ("absolute" or "practical")
+        t_var: str ("conservative", "potential", or "in-situ")
             Does variable `t_name` represent "conservative", "potential", or "in-situ" temperature?
         s_var: str ("absolute" or "practical")
             Does variable `s_name` represent "absolute" or "practical" salinity?
         """
-        # Grid copy
-        self.grid = xgcm.Grid(
-            grid._ds.copy(),
-            coords={
-                **{ax:grid.axes[ax].coords for ax in grid.axes.keys()},
-            },
-            metrics={k:vv.name for (k,v) in grid._metrics.items() for vv in v},
-            boundary={
-                **{ax:grid.axes[ax]._boundary for ax in grid.axes.keys()},
-            },
-            autoparse_metadata=False
-        )
+        # Work on an isolated deep copy so we never mutate the caller's grid/dataset.
+        self.grid = _rebuild_grid(grid, deep=True)
         self.t_name = t_name
         self.t_var = t_var
         self.s_name = s_name
@@ -65,66 +55,99 @@ class WaterMass:
         self.teos10 = teos10
         self.cp = cp
         self.rho_ref = rho_ref
-        
-        if "Z_metrics" in vars(self.grid):
-            pass
-        elif self.h_name in self.grid._ds:
-            # Conservatively interpolate thickness to cell interfaces, needed to
-            # estimate depth of layer centers and compute surface flux divergences
-            Z_center_extended = np.concatenate((
-                self.grid._ds[self.grid.axes['Z'].coords['outer']][np.array([0])].values,
-                self.grid._ds[self.grid.axes['Z'].coords['center']].values,
-                self.grid._ds[self.grid.axes['Z'].coords['outer']][np.array([-1])].values
-            ))
-            with warnings.catch_warnings():
-                warnings.simplefilter(action='ignore', category=FutureWarning)
-                if "time" in self.grid._ds:
-                    time_attrs = self.grid._ds.time.attrs.copy()
-                self.grid._ds[f'{h_name}_i'] = self.grid.transform(
-                    self.grid._ds[h_name].fillna(0.),
-                    "Z",
-                    Z_center_extended,
-                    method="conservative",
-                ).assign_coords({
-                    self.grid.axes['Z'].coords['outer']:
-                    self.grid._ds[self.grid.axes['Z'].coords['outer']].values
-                })
-            setattr(self.grid, "Z_metrics", {
+
+        self._build_vertical_metrics()
+        self._compute_depth_coordinates()
+
+    def _build_vertical_metrics(self):
+        """
+        Populate `self.Z_metrics` with the cell-center and cell-interface thickness
+        metrics. For data with a thickness variable, interpolate thickness to interfaces;
+        for purely 2D/surface data with no "Z" axis, synthesize a single-layer Z axis.
+        """
+        if hasattr(self, "Z_metrics"):
+            return
+        if self.h_name in self.grid._ds:
+            self._interpolate_thickness_to_interfaces()
+            self.Z_metrics = {
                 "center": self.grid._ds[self.h_name],
-                "outer": self.grid._ds[f'{self.h_name}_i']
-            })
-            if "time" in self.grid._ds:
-                self.grid._ds.time.attrs = time_attrs # For some reason these are not preserved by default
+                "outer": self.grid._ds[f'{self.h_name}_i'],
+            }
         elif "Z" not in self.grid.axes:
             self.grid._ds["z_l"] = xr.DataArray([0.5], dims=("z_l",))
             self.grid._ds["z_i"] = xr.DataArray([0, 1.], dims=("z_i",))
             self.grid._ds[f"{self.h_name}"] = xr.DataArray([1], dims=("z_l",))
             self.grid._ds[f"{self.h_name}_i"] = xr.DataArray([0.5, 0.5], dims=("z_i",))
-            coords_2d = {ax:self.grid.axes[ax].coords for ax in self.grid.axes.keys()}
-            coords_2d["Z"] = {"center": "z_l", "outer": "z_i"}
-            metrics_2d = {k:vv.name for (k,v) in self.grid._metrics.items() for vv in v}
-            boundary_2d = {ax:self.grid.axes[ax]._boundary for ax in self.grid.axes.keys()}
-            boundary_2d["Z"] = "extend"
-            self.grid = xgcm.Grid(
-                self.grid._ds,
-                coords=coords_2d,
-                metrics=metrics_2d,
-                boundary=boundary_2d,
-                autoparse_metadata=False
+            self.grid = _rebuild_grid(
+                self.grid,
+                extra_coords={"Z": {"center": "z_l", "outer": "z_i"}},
+                extra_boundary={"Z": "extend"},
             )
-            setattr(self.grid, "Z_metrics", {
+            self.Z_metrics = {
                 "center": self.grid._ds[f"{self.h_name}"],
-                "outer": self.grid._ds[f"{self.h_name}_i"]
-            })
+                "outer": self.grid._ds[f"{self.h_name}_i"],
+            }
+
+    def _interpolate_thickness_to_interfaces(self):
+        """
+        Conservatively interpolate layer thickness to cell interfaces (`{h_name}_i`),
+        needed to estimate depths of layer centers and compute surface flux divergences.
+        """
+        zc, zi = self._zc, self._zi
+        Z_center_extended = np.concatenate((
+            self.grid._ds[zi][np.array([0])].values,
+            self.grid._ds[zc].values,
+            self.grid._ds[zi][np.array([-1])].values
+        ))
+        with warnings.catch_warnings():
+            warnings.simplefilter(action='ignore', category=FutureWarning)
+            if "time" in self.grid._ds:
+                time_attrs = self.grid._ds.time.attrs.copy()
+            self.grid._ds[f'{self.h_name}_i'] = self.grid.transform(
+                self.grid._ds[self.h_name].fillna(0.),
+                "Z",
+                Z_center_extended,
+                method="conservative",
+            ).assign_coords({zi: self.grid._ds[zi].values})
+        if "time" in self.grid._ds:
+            self.grid._ds.time.attrs = time_attrs # For some reason these are not preserved by default
+
+    def _compute_depth_coordinates(self):
+        """Compute layer-center depth `z` and interface depth `z_interface` from Z_metrics."""
         self.grid._ds['z'] = (
-            -self.grid.cumsum(self.grid.Z_metrics["outer"], "Z")
-        ).chunk({self.grid.axes["Z"].coords["center"]: -1})
+            -self.grid.cumsum(self.Z_metrics["outer"], "Z")
+        ).chunk({self._zc: -1})
         self.grid._ds['z_interface'] = xr.where(
             self.grid.axes["Z"].coords["outer"] != self.grid.axes["Z"].coords["outer"][0],
-            -self.grid.cumsum(self.grid.Z_metrics["center"], "Z", to="outer"),
+            -self.grid.cumsum(self.Z_metrics["center"], "Z", to="outer"),
             0.
-        ).chunk({self.grid.axes["Z"].coords["outer"]: -1})
-        
+        ).chunk({self._zi: -1})
+
+    @property
+    def _xc(self):
+        """Name of the X (zonal) center coordinate."""
+        return self.grid.axes['X'].coords['center']
+
+    @property
+    def _yc(self):
+        """Name of the Y (meridional) center coordinate."""
+        return self.grid.axes['Y'].coords['center']
+
+    @property
+    def _zc(self):
+        """Name of the Z (vertical) center coordinate."""
+        return self.grid.axes['Z'].coords['center']
+
+    @property
+    def _zi(self):
+        """Name of the Z (vertical) outer/interface coordinate."""
+        return self.grid.axes['Z'].coords['outer']
+
+    @property
+    def _horizontal_dims(self):
+        """Names of the horizontal (X, Y) center coordinates."""
+        return [self._xc, self._yc]
+
     def get_density(self, density_name="rho"):
         """
         Derive density variables from layer temperature, salinity, and thickness,
@@ -165,8 +188,10 @@ class WaterMass:
             z_ref = density_name.replace("sigma", "")
             try:
                 z_ref = -float(z_ref)*1000
-            except:
-                print("'density_name' is not of form 'sigmaX' where 'X' is a number.")
+            except ValueError as e:
+                raise ValueError(
+                    f"`density_name = {density_name}` is not of form 'sigmaX' where 'X' is a number."
+                ) from e
             
             p_ref = xr.apply_ufunc(
                 gsw.p_from_z, z_ref, self.grid._ds.lat, 0, 0, dask="parallelized"
@@ -209,7 +234,7 @@ class WaterMass:
                     self.grid._ds.p,
                     dask="parallelized"
                 )
-        if not self.teos10 and ("sa" not in vars(self) or "ct" not in vars(self)):
+        if not self.teos10 and ("sa" not in self.grid._ds or "ct" not in self.grid._ds):
             self.grid._ds['sa'] = self.grid._ds[self.s_name]
             self.grid._ds['ct'] = self.grid._ds[self.t_name]
 
@@ -270,8 +295,8 @@ class WaterMass:
             layer exceeds `min_thickness`.
         """
         z_coord = self.grid.axes["Z"].coords[position]
-        h = self.grid.Z_metrics[position]
-    
+        h = self.Z_metrics[position]
+
         # Native order is surface -> bottom. For incrop, reverse to bottom -> surface.
         z_native = self.grid._ds[z_coord]
         z_order = z_native[::-1] if incrop else z_native
@@ -318,7 +343,7 @@ class WaterMass:
         z_coord = self.grid.axes["Z"].coords[position]
     
         # Thickness metric, subset as requested
-        h = self.grid.Z_metrics[position].sel(**kwargs)
+        h = self.Z_metrics[position].sel(**kwargs)
     
         missing_dims = set(h.dims) - set(da.dims)
         if missing_dims:
@@ -403,26 +428,46 @@ class WaterMass:
         oceanmask_name: str
             Name of ocean mask xr.DataArray in `self.grid._ds`. Default: "wet".
         """
-        x_name = grid.axes['X'].coords['center']
+        x_name = self.grid.axes['X'].coords['center']
         area = self.grid.get_metric(da, ['X', 'Y'])
-        num = (da * area * self.grid._ds[landmask_name]).sum(dim=x_name)
-        denom = (area * self.grid._ds[landmask_name]).sum(dim=x_name)
+        num = (da * area * self.grid._ds[oceanmask_name]).sum(dim=x_name)
+        denom = (area * self.grid._ds[oceanmask_name]).sum(dim=x_name)
         return num / denom
 
-def add_gridcoords(grid, coords, boundary):
-    new_grid = xgcm.Grid(
-        grid._ds,
+def _rebuild_grid(grid, extra_coords=None, extra_boundary=None, deep=False):
+    """
+    Reconstruct an `xgcm.Grid` from an existing one, preserving its coords, metrics, and
+    boundary settings, and optionally adding more via `extra_coords`/`extra_boundary`.
+
+    Parameters
+    ----------
+    grid : xgcm.Grid
+        Source grid to copy the configuration (and dataset) from.
+    extra_coords : dict, optional
+        Additional `coords` entries to merge in (e.g. a new "Z" axis).
+    extra_boundary : dict, optional
+        Additional `boundary` entries to merge in.
+    deep : bool (default: False)
+        If True, deep-copy the underlying dataset so the source is never mutated.
+    """
+    ds = grid._ds.copy() if deep else grid._ds
+    return xgcm.Grid(
+        ds,
         coords={
-            **{ax:grid.axes[ax].coords for ax in grid.axes.keys()},
-            **coords
+            **{ax: grid.axes[ax].coords for ax in grid.axes.keys()},
+            **(extra_coords or {}),
         },
-        metrics={k:vv.name for (k,v) in grid._metrics.items() for vv in v},
+        metrics={k: vv.name for (k, v) in grid._metrics.items() for vv in v},
         boundary={
-            **{ax:grid.axes[ax]._boundary for ax in grid.axes.keys()},
-            **boundary
+            **{ax: grid.axes[ax]._boundary for ax in grid.axes.keys()},
+            **(extra_boundary or {}),
         },
-        autoparse_metadata=False
+        autoparse_metadata=False,
     )
+
+def add_gridcoords(grid, coords, boundary):
+    new_grid = _rebuild_grid(grid, extra_coords=coords, extra_boundary=boundary)
+    # Preserve a Z_metrics attribute if a caller attached one to the raw grid.
     if "Z_metrics" in vars(grid):
         new_grid.Z_metrics = grid.Z_metrics
 

@@ -1,16 +1,80 @@
 import pytest
 import os
+import hashlib
+import urllib.request
+import urllib.error
 import numpy as np
 import xarray as xr
 import xgcm
+import xbudget
 import xwmt
-import urllib.request
 
-fname = 'xwmb_test_data_Baltic_3d.20230830.nc'
-ftp_path = 'ftp://ftp.gfdl.noaa.gov/perm/John.Krasting/xwmt/'
-if not os.path.isfile(fname):
-    print(f'Downloading test dataset from {ftp_path}{fname}')
-    urllib.request.urlretrieve(f'{ftp_path}{fname}', fname)
+DATA_FILENAME = 'xwmb_test_data_Baltic_3d.20230830.nc'
+# GFDL serves this tree over both HTTPS and (legacy) FTP; prefer HTTPS, fall back to FTP.
+DATA_URLS = (
+    f'https://ftp.gfdl.noaa.gov/perm/John.Krasting/xwmt/{DATA_FILENAME}',
+    f'ftp://ftp.gfdl.noaa.gov/perm/John.Krasting/xwmt/{DATA_FILENAME}',
+)
+DATA_SHA256 = '4d8c219de6380950326c3aa886e2c70345f35e8f79030625400154c60b97e7e8'
+
+
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+@pytest.fixture(scope="session")
+def baltic_dataset_path():
+    """
+    Path to the Baltic MOM6 test dataset, downloaded and integrity-checked on demand.
+
+    Skips cleanly if the data cannot be retrieved (e.g. an offline runner) instead of
+    erroring during collection, and fails loudly on a checksum mismatch, since silent
+    data drift would invalidate the hardcoded regression values.
+    """
+    if not os.path.isfile(DATA_FILENAME):
+        errors = []
+        for url in DATA_URLS:
+            try:
+                urllib.request.urlretrieve(url, DATA_FILENAME)
+                break
+            except (urllib.error.URLError, OSError) as e:
+                errors.append(f"{url}: {e}")
+        else:
+            pytest.skip(
+                f"Could not download test dataset {DATA_FILENAME}:\n" + "\n".join(errors)
+            )
+    actual = _sha256(DATA_FILENAME)
+    if actual != DATA_SHA256:
+        pytest.fail(
+            f"Checksum mismatch for {DATA_FILENAME}: expected {DATA_SHA256}, got {actual}. "
+            "Delete the file to re-download, or update DATA_SHA256 if the data changed intentionally."
+        )
+    return DATA_FILENAME
+
+
+@pytest.fixture(scope="session")
+def baltic_grid_and_budgets(baltic_dataset_path):
+    """Build the xgcm grid and aggregated MOM6 budget dict from the Baltic test dataset."""
+    ds = xr.open_dataset(baltic_dataset_path, decode_timedelta=False).isel(time=0)
+    coords = {
+        'X': {'center': 'xh', 'outer': 'xq'},
+        'Y': {'center': 'yh', 'outer': 'yq'},
+        'Z': {'center': 'zl', 'outer': 'zi'},
+    }
+    metrics = {('X', 'Y'): "areacello"}
+    grid = xgcm.Grid(ds, coords=coords, metrics=metrics, periodic=None, autoparse_metadata=False)
+
+    budgets_dict = xbudget.load_preset_budget(model="MOM6")
+    # The test data set does not include sea ice melt diagnostics
+    del budgets_dict["mass"]["rhs"]["sum"]["surface_exchange_flux"]["sum"]["sea_ice_melt"]
+    xbudget.collect_budgets(grid, budgets_dict)
+    simple_budgets = xbudget.aggregate(budgets_dict)
+    return grid, simple_budgets
+
 
 class Helpers:
 

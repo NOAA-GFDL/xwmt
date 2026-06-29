@@ -25,16 +25,19 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "gsw",
-    "numba",
-    "numpy",
-    "bottleneck",
-    "pandas",
-    "xarray",
-    "xhistogram",
+    "gsw >= 3.4.0",
+    "numpy >= 1.23",
+    "xarray >= 2022.3.0",
+    "xhistogram >= 0.3.0",
     "xgcm >= 0.9.0",
     "xbudget >= 0.6.0",
 ]
+
+[project.optional-dependencies]
+# Optional accelerator for xarray reductions (bottleneck). Not imported directly.
+accel = ["bottleneck"]
+test = ["pytest", "netcdf4", "pooch"]
+dev = ["black", "pylint", "pytest", "netcdf4", "pooch"]
 
 [project.urls]
 "Homepage" = "https://github.com/NOAA-GFDL/xwmt"
