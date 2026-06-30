@@ -4,6 +4,8 @@ import xgcm
 import gsw
 import warnings
 
+from xwmt.eos import resolve_eos, convert_ts
+
 
 class WaterMass:
     """
@@ -16,11 +18,12 @@ class WaterMass:
         t_name="thetao",
         s_name="so",
         h_name="thkcello",
-        teos10=True,
+        eos="teos10",
         cp=3992.0,
         rho_ref=1035.0,
         t_var="conservative",
         s_var="absolute",
+        teos10=None,
     ):
         """
         Create a new WaterMass object from an input xgcm.Grid instance.
@@ -30,14 +33,22 @@ class WaterMass:
         grid: xgcm.Grid
             Contains information about ocean model grid coordinates, metrics, and data variables.
         t_name: str (default: "thetao")
-            Name of conservative temperature variable [in degrees Celsius] in ds.
+            Name of the temperature variable [in degrees Celsius] in ds.
+            Its kind (conservative/potential/in-situ) is declared by `t_var`.
         s_name: str (default: "so")
-            Name of absolute salinity variable [in g/kg] in ds.
+            Name of the salinity variable in ds. Its kind (absolute/practical)
+            is declared by `s_var`.
         h_name: str (default: "thkcello")
             Name of thickness variable [in m] in ds.
-        teos10 : boolean (default: True)
-            Get expansion/contraction coefficients from the Thermodynamic Equation Of Seawater - 2010 (TEOS-10),
-            unless "alpha" and "beta" variables already present in `grid._ds`.
+        eos : str, xeos.EquationOfState, or None (default: "teos10")
+            Equation of state used to derive density and the expansion/contraction
+            coefficients `alpha`/`beta`. Either a canonical `xeos` EOS id (see
+            `xwmt.eos.list_eos()` / `xeos.list_eos()`, e.g. "teos10",
+            "wright97-full", "jmd95"), an already-built `xeos.EquationOfState`
+            (e.g. from `xeos.from_model(...)`), or None. If None, "alpha", "beta"
+            and the requested density variable must already be present in `grid._ds`.
+            Temperature/salinity are automatically converted (via `gsw`) from the
+            kinds declared by `t_var`/`s_var` to the kinds the EOS expects.
         cp: float (default: 3992.0)
             Value of specific heat capacity.
         rho_ref: float (default: 1035.0)
@@ -46,7 +57,21 @@ class WaterMass:
             Does variable `t_name` represent "conservative", "potential", or "in-situ" temperature?
         s_var: str ("absolute" or "practical")
             Does variable `s_name` represent "absolute" or "practical" salinity?
+        teos10 : bool, optional
+            Deprecated. Use `eos` instead. `teos10=True` maps to `eos="teos10"`
+            and `teos10=False` maps to `eos=None` (alpha/beta provided in `grid._ds`).
         """
+        if teos10 is not None:
+            warnings.warn(
+                "`teos10` is deprecated; use `eos` instead "
+                "(`teos10=True` -> `eos='teos10'`, `teos10=False` -> `eos=None`).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            # Only honor the legacy flag if `eos` was left at its default, so an
+            # explicit `eos=...` always takes precedence.
+            if eos == "teos10":
+                eos = "teos10" if teos10 else None
         # Work on an isolated deep copy so we never mutate the caller's grid/dataset.
         self.grid = _rebuild_grid(grid, deep=True)
         self.t_name = t_name
@@ -54,9 +79,13 @@ class WaterMass:
         self.s_name = s_name
         self.s_var = s_var
         self.h_name = h_name
-        self.teos10 = teos10
+        self.eos = resolve_eos(eos)
         self.cp = cp
         self.rho_ref = rho_ref
+        # Remember whether the user supplied alpha/beta up front: if so, those are
+        # honored as-is and never overwritten by EOS-derived values.
+        self._user_alpha = "alpha" in self.grid._ds
+        self._user_beta = "beta" in self.grid._ds
 
         self._build_vertical_metrics()
         self._compute_depth_coordinates()
@@ -157,17 +186,24 @@ class WaterMass:
 
     def get_density(self, density_name="rho"):
         """
-        Derive density variables from layer temperature, salinity, and thickness,
+        Derive a density variable from layer temperature and salinity, along with
+        the thermal-expansion (`alpha`) and haline-contraction (`beta`) coefficients,
         and add them to the dataset (if not already present).
-        Uses the TEOS10 algorithm from the `gsw` package by default, unless "alpha"
-        and "beta" variables are already provided in `self.grid._ds`.
+
+        Density and the coefficients are evaluated with the equation of state
+        selected at construction (`self.eos`), delegated to the `xeos` package.
+        Temperature and salinity are first converted (via `gsw`) from the kinds
+        declared by `t_var`/`s_var` to the kinds the EOS expects. If `self.eos`
+        is None, "alpha", "beta" and `density_name` must already be present in
+        `self.grid._ds`.
 
         Parameters
         ----------
         density_name: str (default: "rho")
             Name of density variable. Supported density variables are:
-            "rho" (in-situ), "sigma0", "sigma1", "sigma2", "sigma3", "sigma4"
-            (corresponding to functions of the same name in the `gsw` package).
+            "rho" (in-situ density at the local pressure) and "sigma0", "sigma1",
+            "sigma2", "sigma3", "sigma4" (potential density anomaly referenced to
+            0, 1000, ..., 4000 dbar).
 
         Returns
         -------
@@ -184,9 +220,19 @@ class WaterMass:
             raise ValueError(f"ds must include thickness variable\
             defined by kwarg h_name (default: {self.h_name}).")
 
-        if (
-            "alpha" not in self.grid._ds or "beta" not in self.grid._ds or self.teos10
-        ) and "p" not in self.grid._ds.data_vars:
+        # With no EOS, alpha/beta/density must all be supplied by the caller.
+        if self.eos is None:
+            for required in ("alpha", "beta", density_name):
+                if required not in self.grid._ds:
+                    raise ValueError(
+                        f"With `eos=None`, {required!r} must already be present in "
+                        f"`grid._ds` (got variables: {list(self.grid._ds.data_vars)})."
+                    )
+            return self.grid._ds[density_name]
+
+        # In-situ sea pressure [dbar] from depth, used by the EOS and by the
+        # temperature/salinity kind conversions.
+        if "p" not in self.grid._ds.data_vars:
             self.grid._ds["p"] = xr.apply_ufunc(
                 gsw.p_from_z,
                 self.grid._ds.z,
@@ -196,96 +242,61 @@ class WaterMass:
                 dask="parallelized",
             )
 
+        # `p_ref` is the pressure at which alpha/beta are evaluated; `p_density` is
+        # the pressure at which the density variable itself is evaluated. For "rho"
+        # both are the in-situ pressure. For "sigmaX" the density is referenced to
+        # exactly X*1000 dbar (the defining reference pressure of the sigmaX anomaly),
+        # while alpha/beta retain the historical `p_from_z(-X*1000 m)` reference.
         if "sigma" in density_name:
-            z_ref = density_name.replace("sigma", "")
+            ref_km = density_name.replace("sigma", "")
             try:
-                z_ref = -float(z_ref) * 1000
+                ref_km = float(ref_km)
             except ValueError as e:
                 raise ValueError(
                     f"`density_name = {density_name}` is not of form 'sigmaX' where 'X' is a number."
                 ) from e
-
             p_ref = xr.apply_ufunc(
-                gsw.p_from_z, z_ref, self.grid._ds.lat, 0, 0, dask="parallelized"
+                gsw.p_from_z,
+                -ref_km * 1000,
+                self.grid._ds.lat,
+                0,
+                0,
+                dask="parallelized",
             )
+            p_density = ref_km * 1000.0
         elif density_name == "rho":
-            z_ref = self.grid._ds.z
             p_ref = self.grid._ds.p
+            p_density = self.grid._ds.p
         else:
             raise NameError(
                 f"`density_name = {density_name}` is not a supported option."
             )
 
-        # Prognostic temperature and salinity are, by default, interpreted as
-        # conservative temperature and absolute salinity (following McDougall et al. 2021).
-        if self.teos10 and "sa" not in self.grid._ds:
-            if self.s_var == "absolute":
-                self.grid._ds["sa"] = self.grid._ds[self.s_name]
-            elif self.s_var == "practical":
-                self.grid._ds["sa"] = xr.apply_ufunc(
-                    gsw.SA_from_SP,
-                    self.grid._ds[self.s_name],
-                    self.grid._ds.p,
-                    self.grid._ds.lon,
-                    self.grid._ds.lat,
-                    dask="parallelized",
-                )
-        if self.teos10 and "ct" not in self.grid._ds:
-            if self.t_var == "conservative":
-                self.grid._ds["ct"] = self.grid._ds[self.t_name]
-            elif self.t_var == "potential":
-                self.grid._ds["ct"] = xr.apply_ufunc(
-                    gsw.CT_from_pt,
-                    self.grid._ds.sa,
-                    self.grid._ds[self.t_name],
-                    dask="parallelized",
-                )
-            elif self.t_var == "in-situ":
-                self.grid._ds["ct"] = xr.apply_ufunc(
-                    gsw.CT_from_t,
-                    self.grid._ds.sa,
-                    self.grid._ds[self.t_name],
-                    self.grid._ds.p,
-                    dask="parallelized",
-                )
-        if not self.teos10 and ("sa" not in self.grid._ds or "ct" not in self.grid._ds):
-            self.grid._ds["sa"] = self.grid._ds[self.s_name]
-            self.grid._ds["ct"] = self.grid._ds[self.t_name]
+        # Convert temperature/salinity to the kinds the chosen EOS expects.
+        temp, salt = convert_ts(
+            self.grid._ds[self.t_name],
+            self.grid._ds[self.s_name],
+            self.eos,
+            self.t_var,
+            self.s_var,
+            self.grid._ds.p,
+            lon=self.grid._ds.get("lon"),
+            lat=self.grid._ds.get("lat"),
+        )
 
-        # Calculate thermal expansion coefficient alpha (1/K) at reference pressure
-        if "alpha" not in self.grid._ds:
-            self.grid._ds["alpha"] = xr.apply_ufunc(
-                gsw.alpha,
-                self.grid._ds.sa,
-                self.grid._ds.ct,
-                p_ref,
-                dask="parallelized",
-            )
+        # Thermal expansion coefficient alpha and haline contraction coefficient beta
+        # at the reference pressure (unless supplied by the caller).
+        if not self._user_alpha:
+            self.grid._ds["alpha"] = self.eos.alpha(temp, salt, p_ref)
+        if not self._user_beta:
+            self.grid._ds["beta"] = self.eos.beta(temp, salt, p_ref)
 
-        # Calculate the haline contraction coefficient beta (kg/g) at reference pressure
-        if "beta" not in self.grid._ds:
-            self.grid._ds["beta"] = xr.apply_ufunc(
-                gsw.beta, self.grid._ds.sa, self.grid._ds.ct, p_ref, dask="parallelized"
-            )
-
-        # Calculate potential density (kg/m^3)
+        # Density (kg/m^3): in-situ for "rho", potential-density anomaly for "sigmaX".
         if density_name not in self.grid._ds:
-            if density_name == "rho":
-                self.grid._ds[density_name] = xr.apply_ufunc(
-                    getattr(gsw, density_name),
-                    self.grid._ds.sa,
-                    self.grid._ds.ct,
-                    self.grid._ds.p,
-                    dask="parallelized",
-                ).rename(density_name)
-
-            elif "sigma" in density_name:
-                self.grid._ds[density_name] = xr.apply_ufunc(
-                    getattr(gsw, density_name),
-                    self.grid._ds.sa,
-                    self.grid._ds.ct,
-                    dask="parallelized",
-                ).rename(density_name)
+            density = self.eos.rho(temp, salt, p_density)
+            if "sigma" in density_name:
+                density = density - 1000.0
+            self.grid._ds[density_name] = density.rename(density_name)
 
         return self.grid._ds[density_name]
 
