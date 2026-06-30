@@ -99,15 +99,14 @@ class WaterMassTransformations(WaterMass):
                     f"""xbudget_dict must contain element `["{tracer}"]["lambda"]` `["{tracer}"]["surface_lambda"]`"""
                 )
 
+        # `mass` must be present, but `thickness` within it is optional: when it is
+        # omitted, `h_name` keeps its default. This supports surface-only water-mass
+        # transformations (e.g. `{"mass": {}}`), where no layer thickness is needed.
         kwargs = {}
-        contains_thickness = False
-        if "mass" in xbudget_dict and "thickness" in xbudget_dict["mass"]:
+        if "mass" not in xbudget_dict:
+            raise ValueError("""xbudget_dict must contain a `["mass"]` entry.""")
+        if "thickness" in xbudget_dict["mass"]:
             kwargs["h_name"] = xbudget_dict["mass"]["thickness"]
-            contains_thickness = True
-        if not contains_thickness:
-            raise ValueError(
-                """xbudget_dict must contain element `["mass"]["thickness"]`"""
-            )
 
         super().__init__(
             grid,

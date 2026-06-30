@@ -68,11 +68,44 @@ def test_invalid_method_raises(grid):
         xwmt.WaterMassTransformations(grid, FULL_BUDGET, method="bogus")
 
 
-def test_missing_thickness_raises(grid):
-    # B2: `mass` present but no `thickness` must raise (previously fell through silently).
-    budget = {"mass": {}, "heat": {"lambda": "temperature", "lhs": {}, "rhs": {}}}
-    with pytest.raises(ValueError, match="thickness"):
+def _surface_grid():
+    """A tiny 2D surface grid (no Z axis), as used by the surface-WMT example notebooks."""
+    ny, nx = 4, 5
+    ds = xr.Dataset()
+    ds = ds.assign_coords(
+        {"x": np.arange(nx, dtype=float), "y": np.arange(ny, dtype=float)}
+    )
+    ds["tos"] = xr.DataArray(np.ones((ny, nx)), dims=("y", "x"))
+    ds["sos"] = xr.DataArray(35.0 * np.ones((ny, nx)), dims=("y", "x"))
+    ds = ds.assign_coords(
+        {"areacello": xr.DataArray(np.ones((ny, nx)), dims=("y", "x"))}
+    )
+    return xgcm.Grid(
+        ds,
+        coords={"X": {"center": "x"}, "Y": {"center": "y"}},
+        metrics={("X", "Y"): "areacello"},
+        periodic=False,
+        autoparse_metadata=False,
+    )
+
+
+def test_missing_mass_raises(grid):
+    # B2: the budget must contain a `mass` entry.
+    budget = {"heat": {"lambda": "temperature", "lhs": {}, "rhs": {}}}
+    with pytest.raises(ValueError, match="mass"):
         xwmt.WaterMassTransformations(grid, budget)
+
+
+def test_surface_wmt_without_thickness():
+    # B2 regression: `thickness` is optional. A surface budget (`{"mass": {}}`) on a
+    # 2D grid with no Z axis must construct, not raise (surface WMT needs no thickness).
+    budget = {
+        "mass": {},
+        "heat": {"surface_lambda": "tos"},
+        "salt": {"surface_lambda": "sos"},
+    }
+    wmt = xwmt.WaterMassTransformations(_surface_grid(), budget)
+    assert wmt.tracer_dict["heat"] == "tos"
 
 
 def test_get_density_invalid_name_raises(grid):
