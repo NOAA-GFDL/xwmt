@@ -112,11 +112,21 @@ def convert_ts(t, s, eos, t_var, s_var, p, lon=None, lat=None):
     t_in, s_in = _T_KIND[t_var], _S_KIND[s_var]
     t_out, s_out = eos.temperature, eos.salinity
 
-    # Absolute salinity is the hub: gsw's temperature conversions all take SA.
-    if s_in is SalinityKind.ABSOLUTE:
-        sa = s
-    else:
-        sa = xr.apply_ufunc(gsw.SA_from_SP, s, p, lon, lat, dask="parallelized")
+    # Absolute salinity is the hub that gsw's temperature conversions take, so it is
+    # computed lazily and at most once -- and not at all when nothing needs it (e.g.
+    # potential/practical input to a potential/practical EOS), which avoids a
+    # spurious lon/lat dependency.
+    _sa_box = []
+
+    def _sa():
+        if not _sa_box:
+            if s_in is SalinityKind.ABSOLUTE:
+                _sa_box.append(s)
+            else:
+                _sa_box.append(
+                    xr.apply_ufunc(gsw.SA_from_SP, s, p, lon, lat, dask="parallelized")
+                )
+        return _sa_box[0]
 
     # Produce the temperature kind the EOS wants.
     if t_out is TemperatureKind.INSITU:
@@ -131,20 +141,20 @@ def convert_ts(t, s, eos, t_var, s_var, p, lon=None, lat=None):
         if t_in is TemperatureKind.CONSERVATIVE:
             ct = t
         elif t_in is TemperatureKind.POTENTIAL:
-            ct = xr.apply_ufunc(gsw.CT_from_pt, sa, t, dask="parallelized")
+            ct = xr.apply_ufunc(gsw.CT_from_pt, _sa(), t, dask="parallelized")
         else:  # in-situ
-            ct = xr.apply_ufunc(gsw.CT_from_t, sa, t, p, dask="parallelized")
+            ct = xr.apply_ufunc(gsw.CT_from_t, _sa(), t, p, dask="parallelized")
         if t_out is TemperatureKind.CONSERVATIVE:
             temp = ct
         else:  # potential
-            temp = xr.apply_ufunc(gsw.pt_from_CT, sa, ct, dask="parallelized")
+            temp = xr.apply_ufunc(gsw.pt_from_CT, _sa(), ct, dask="parallelized")
 
     # Produce the salinity kind the EOS wants.
     if s_out is SalinityKind.ABSOLUTE:
-        salt = sa
+        salt = _sa()
     elif s_in is SalinityKind.PRACTICAL:
         salt = s
     else:  # absolute -> practical
-        salt = xr.apply_ufunc(gsw.SP_from_SA, sa, p, lon, lat, dask="parallelized")
+        salt = xr.apply_ufunc(gsw.SP_from_SA, _sa(), p, lon, lat, dask="parallelized")
 
     return temp, salt

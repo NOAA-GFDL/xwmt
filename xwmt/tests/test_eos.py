@@ -97,6 +97,13 @@ def test_teos10_matches_gsw_bit_for_bit():
     s2 = wm2.get_density("sigma2").squeeze().values
     np.testing.assert_array_equal(s2, gsw.sigma2(SA, CT))
 
+    # alpha/beta agree with gsw to ~machine precision (computed at the in-situ
+    # pressure for the "rho" call above).
+    alpha = wm.grid._ds.alpha.squeeze().values
+    beta = wm.grid._ds.beta.squeeze().values
+    np.testing.assert_allclose(alpha, gsw.alpha(SA, CT, p), rtol=1e-12, atol=0.0)
+    np.testing.assert_allclose(beta, gsw.beta(SA, CT, p), rtol=1e-12, atol=0.0)
+
 
 @pytest.mark.parametrize("eos", sorted(list_eos()))
 def test_every_eos_gives_plausible_density(eos):
@@ -151,7 +158,10 @@ def test_convert_ts_converts_for_potential_practical_eos():
     # Conversions actually ran (values differ from the absolute/conservative input).
     assert not np.allclose(temp.values, t.values)
     assert not np.allclose(salt.values, s.values)
-    # And match gsw's own conversions.
+    # And match gsw's own conversions exactly. The input is already absolute
+    # salinity (s_var="absolute"), so that is the SA hub. Temperature: CT ->
+    # potential; salinity: absolute -> practical.
+    np.testing.assert_allclose(temp.values, gsw.pt_from_CT(s.values, t.values))
     np.testing.assert_allclose(
         salt.values, gsw.SP_from_SA(s.values, p.values, lon.values, lat.values)
     )
@@ -186,6 +196,26 @@ def test_explicit_eos_overrides_deprecated_teos10():
     with pytest.warns(DeprecationWarning):
         wm = xwmt.WaterMass(grid, eos="wright97-full", teos10=True)
     assert wm.eos.id == "wright97-full"
+
+
+def test_explicit_teos10_string_wins_over_teos10_false():
+    """Explicitly passing eos='teos10' must not be coerced to None by teos10=False."""
+    grid = _grid()
+    with pytest.warns(DeprecationWarning):
+        wm = xwmt.WaterMass(grid, eos="teos10", teos10=False)
+    assert wm.eos is not None and wm.eos.id == "teos10"
+
+
+def test_convert_ts_no_latlon_needed_when_no_conversion():
+    """potential/practical input to a potential/practical EOS needs no lon/lat."""
+    grid = _grid()
+    t, s = grid._ds.thetao, grid._ds.so
+    p = xr.full_like(t, 100.0)
+    eos = resolve_eos("jmd95")
+    # No lon/lat supplied; must not raise and must pass inputs through unchanged.
+    temp, salt = convert_ts(t, s, eos, "potential", "practical", p)
+    assert temp is t
+    assert salt is s
 
 
 def test_eos_none_requires_user_alpha_beta_density():

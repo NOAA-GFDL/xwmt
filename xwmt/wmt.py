@@ -5,7 +5,7 @@ from xhistogram.xarray import histogram
 import warnings
 
 from xbudget import flatten_lol
-from xwmt.wm import WaterMass
+from xwmt.wm import WaterMass, _EOS_UNSET
 from xwmt.compute import calc_hlamdot_tendency
 
 
@@ -33,7 +33,7 @@ class WaterMassTransformations(WaterMass):
         grid,
         xbudget_dict,
         mask=None,
-        eos="teos10",
+        eos=_EOS_UNSET,
         cp=3992.0,
         rho_ref=1035.0,
         t_var="conservative",
@@ -82,8 +82,9 @@ class WaterMassTransformations(WaterMass):
             Set to True to force a transformation into the target coordinates, even if these
             coordinates already exist in the `grid` data structure.
         teos10 : bool, optional
-            Deprecated. Use `eos` instead (`teos10=True` -> `eos="teos10"`,
-            `teos10=False` -> `eos=None`).
+            Deprecated. Use `eos` instead. `teos10=True` selects `eos="teos10"`;
+            `teos10=False` maps to `eos=None` (which requires alpha/beta/density to
+            be present in `grid._ds`). An explicit `eos=` always takes precedence.
         """
 
         valid_methods = ("default", "xhistogram", "xgcm")

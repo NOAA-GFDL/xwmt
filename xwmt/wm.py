@@ -6,6 +6,11 @@ import warnings
 
 from xwmt.eos import resolve_eos, convert_ts
 
+# Sentinel for the `eos` default, so an explicitly-passed `eos` (even the string
+# "teos10") can be distinguished from the unset default when reconciling the
+# deprecated `teos10` keyword.
+_EOS_UNSET = object()
+
 
 class WaterMass:
     """
@@ -18,7 +23,7 @@ class WaterMass:
         t_name="thetao",
         s_name="so",
         h_name="thkcello",
-        eos="teos10",
+        eos=_EOS_UNSET,
         cp=3992.0,
         rho_ref=1035.0,
         t_var="conservative",
@@ -58,20 +63,29 @@ class WaterMass:
         s_var: str ("absolute" or "practical")
             Does variable `s_name` represent "absolute" or "practical" salinity?
         teos10 : bool, optional
-            Deprecated. Use `eos` instead. `teos10=True` maps to `eos="teos10"`
-            and `teos10=False` maps to `eos=None` (alpha/beta provided in `grid._ds`).
+            Deprecated. Use `eos` instead. `teos10=True` selects `eos="teos10"`.
+            `teos10=False` maps to `eos=None`, which (unlike the old `teos10=False`,
+            which computed alpha/beta/density from gsw) requires "alpha", "beta" and
+            the density variable to be present in `grid._ds`; to compute density from
+            a specific equation of state, pass an explicit `eos=` id instead. An
+            explicitly-passed `eos` always takes precedence over `teos10`.
         """
         if teos10 is not None:
             warnings.warn(
-                "`teos10` is deprecated; use `eos` instead "
-                "(`teos10=True` -> `eos='teos10'`, `teos10=False` -> `eos=None`).",
+                "`teos10` is deprecated; use `eos` instead. `teos10=True` selects "
+                "`eos='teos10'`; `teos10=False` maps to `eos=None`, which now requires "
+                "alpha/beta/density to be supplied in `grid._ds` (it no longer falls "
+                "back to gsw). Pass an explicit `eos=` id to compute density from a "
+                "specific equation of state.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-            # Only honor the legacy flag if `eos` was left at its default, so an
-            # explicit `eos=...` always takes precedence.
-            if eos == "teos10":
+            # Only honor the legacy flag if `eos` was left unset, so an explicit
+            # `eos=...` (even "teos10") always takes precedence.
+            if eos is _EOS_UNSET:
                 eos = "teos10" if teos10 else None
+        if eos is _EOS_UNSET:
+            eos = "teos10"
         # Work on an isolated deep copy so we never mutate the caller's grid/dataset.
         self.grid = _rebuild_grid(grid, deep=True)
         self.t_name = t_name
@@ -208,6 +222,16 @@ class WaterMass:
         Returns
         -------
         xr.DataArray
+
+        Notes
+        -----
+        Unless they were supplied by the caller at construction, "alpha" and "beta"
+        are (re)computed at *this* call's reference pressure and written to
+        `self.grid._ds`. Calling `get_density` for different `density_name`s on the
+        same instance therefore overwrites them (each density gets alpha/beta at its
+        own reference pressure); hold a copy if you need an earlier call's values.
+        The converted EOS-input temperature/salinity are used internally and are not
+        added to `self.grid._ds`.
         """
 
         if self.t_name not in self.grid._ds:
