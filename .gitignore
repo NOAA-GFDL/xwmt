@@ -138,3 +138,6 @@ dask-worker-space/
 docs/source/api/
 docs/source/savefig/
 docs/jupyter_execute
+
+# Downloaded test datasets
+*.nc

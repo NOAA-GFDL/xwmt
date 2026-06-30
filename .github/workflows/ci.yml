@@ -8,6 +8,11 @@ on:
     branches:
       - main
 
+# Cancel superseded runs of the same ref instead of using a third-party action.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
 
@@ -21,18 +26,14 @@ jobs:
         python-version: ['3.11', '3.12', '3.13', '3.14']
 
     steps:
-      - name: Cancel previous runs
-        uses: styfle/cancel-workflow-action@0.7.0
-        with:
-          access_token: ${{ github.token }}
       - name: Checkout source
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Conda setup
-        uses: conda-incubator/setup-miniconda@v2
+        uses: conda-incubator/setup-miniconda@v3
         with:
           channels: conda-forge
-          mamba-version: '*'
+          miniforge-version: latest
           python-version: ${{ matrix.python-version }}
           activate-environment: test_env_xwmt
           auto-activate-base: false
@@ -45,6 +46,30 @@ jobs:
         run: |
           conda env list
           conda list
+      - name: Verify Python version matches matrix
+        run: |
+          python -c "import sys; assert sys.version.startswith('${{ matrix.python-version }}'), sys.version"
       - name: Test with pytest
         run: |
-          pytest
+          pytest -v --cov=xwmt --cov-report=xml --cov-report=term-missing
+
+  lint:
+    # `black` is a blocking format gate (the tree is black-clean). `pylint` is
+    # advisory for now (--exit-zero) until the score is raised; drop --exit-zero
+    # to make it blocking.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install linters
+        # Pin black so the blocking format gate is reproducible (unpinned black
+        # silently drifts as new releases change formatting).
+        run: pip install "black==26.5.1" pylint
+      - name: black --check
+        run: black --check --diff xwmt/
+      - name: pylint
+        run: pylint xwmt/ --rcfile=.pylintrc --exit-zero

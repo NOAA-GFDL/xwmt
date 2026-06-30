@@ -25,19 +25,27 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
+    # Equations of state are delegated to `xeos`, which vendors the JMD95/Wright/
+    # UNESCO/MDJWF/Roquet/MPAS kernels as pure-numpy and pulls in `gsw` for TEOS-10.
+    "xeos[teos10] >= 0.1.0",
+    # Used directly by xwmt for pressure (`gsw.p_from_z`) and temperature/salinity
+    # kind conversions (e.g. `gsw.CT_from_pt`, `gsw.SA_from_SP`).
+    "gsw >= 3.4.0",
+    "numpy >= 1.23",
+    # Required by xgcm's `transform` (conservative remapping), which xwmt uses for
+    # the "xgcm"/"default" methods. Not imported directly by xwmt.
     "numba",
-    "numpy",
-    "bottleneck",
-    "pandas",
-    "xarray",
-    "xhistogram",
+    "xarray >= 2022.3.0",
+    "xhistogram >= 0.3.0",
     "xgcm >= 0.9.0",
     "xbudget >= 0.6.0",
-    "seawater",
-    "fastjmd95",
-    "momlevel",
-    "gsw",
 ]
+
+[project.optional-dependencies]
+# Optional accelerator for xarray reductions (bottleneck). Not imported directly.
+accel = ["bottleneck"]
+test = ["pytest", "netcdf4"]
+dev = ["black", "pylint", "pytest", "netcdf4"]
 
 [project.urls]
 "Homepage" = "https://github.com/NOAA-GFDL/xwmt"
@@ -47,6 +55,11 @@ dependencies = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.black]
+# Pin the formatting target so `black` output is deterministic across versions
+# and the CI format gate is reproducible (the lint job installs a matching black).
+target-version = ["py311"]
 
 [tool.hatch.version]
 path = "xwmt/version.py"
