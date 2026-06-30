@@ -8,9 +8,6 @@ dependencies:
   - pytest
   - netcdf4
   - nc-time-axis
-  # Cloud access for the CMIP6 example notebooks (public Pangeo GCS zarr stores)
-  - gcsfs
-  - zarr
   - ipython
   - jupyter
   - sphinx
