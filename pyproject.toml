@@ -27,6 +27,9 @@ classifiers = [
 dependencies = [
     "gsw >= 3.4.0",
     "numpy >= 1.23",
+    # Required by xgcm's `transform` (conservative remapping), which xwmt uses for
+    # the "xgcm"/"default" methods. Not imported directly by xwmt.
+    "numba",
     "xarray >= 2022.3.0",
     "xhistogram >= 0.3.0",
     "xgcm >= 0.9.0",
