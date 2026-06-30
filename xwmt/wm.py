@@ -175,20 +175,14 @@ class WaterMass:
         """
 
         if self.t_name not in self.grid._ds:
-            raise ValueError(
-                f"ds must include temperature variable\
-            defined by kwarg t_name (default: {self.t_name})."
-            )
+            raise ValueError(f"ds must include temperature variable\
+            defined by kwarg t_name (default: {self.t_name}).")
         if self.s_name not in self.grid._ds:
-            raise ValueError(
-                f"ds must include salinity variable\
-            defined by kwarg s_name (default: {self.s_name})."
-            )
+            raise ValueError(f"ds must include salinity variable\
+            defined by kwarg s_name (default: {self.s_name}).")
         if self.h_name not in self.grid._ds:
-            raise ValueError(
-                f"ds must include thickness variable\
-            defined by kwarg h_name (default: {self.h_name})."
-            )
+            raise ValueError(f"ds must include thickness variable\
+            defined by kwarg h_name (default: {self.h_name}).")
 
         if (
             "alpha" not in self.grid._ds or "beta" not in self.grid._ds or self.teos10

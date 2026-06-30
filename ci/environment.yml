@@ -6,7 +6,7 @@ dependencies:
   # Leave python unpinned so the CI matrix (setup-miniconda) owns the version;
   # pinning it here (e.g. >=3.12) silently upgrades the 3.11 matrix cell.
   - python
-  - black
+  - black>=26
   - pylint
   - pytest
   - pytest-cov

@@ -319,7 +319,7 @@ class WaterMassTransformations(WaterMass):
         >>> wmt = WaterMassTransformations(grid, xbudget_dict)
         >>> ddict = wmt.datadict("heat", "diffusion")
         """
-        (tracer_name, process) = self.process_names(tracer, term)
+        tracer_name, process = self.process_names(tracer, term)
 
         if process is None or process not in self.grid._ds:
             return

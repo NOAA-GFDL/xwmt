@@ -48,6 +48,11 @@ dev = ["black", "pylint", "pytest", "netcdf4"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.black]
+# Pin the formatting target so `black` output is deterministic across versions
+# and the CI format gate is reproducible (the lint job installs a matching black).
+target-version = ["py311"]
+
 [tool.hatch.version]
 path = "xwmt/version.py"
 
