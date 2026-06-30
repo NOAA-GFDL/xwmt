@@ -121,7 +121,8 @@ the ones actually present in the dataset.
   with analytically-known transformations and check that xwmt converges to the exact answer as
   resolution increases. This is where to validate any change to the core transformation math.
 - `test_bugfixes.py` — fast unit/regression tests on a tiny synthetic grid (no data download)
-  that pin previously-broken paths (validation errors, `zonal_mean`, grid non-mutation).
+  that pin previously-broken paths (input validation, constructor mask, prebinned method
+  non-mutation, grid non-mutation).
 - Baltic test data is fetched by the `baltic_dataset_path` / `baltic_grid_and_budgets` session
   fixtures in `conftest.py` (HTTPS-first, checksum-pinned, skips cleanly when offline). `*.nc`
   is gitignored. The pinned `DATA_SHA256` must be updated if the dataset is intentionally changed.

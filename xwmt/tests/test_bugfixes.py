@@ -16,7 +16,7 @@ import xwmt
 
 
 def minimal_grid():
-    """A tiny single-column grid with thickness, a tracer, an area metric, and a mask."""
+    """A tiny single-column grid with thickness, a tracer, and an area metric."""
     ds = xr.Dataset()
     ds = ds.assign_coords(
         {
@@ -39,7 +39,6 @@ def minimal_grid():
             "lat": xr.DataArray([[1.0]], dims=("x", "y")),
         }
     )
-    ds["wet"] = xr.DataArray([[1.0]], dims=("x", "y"))
     coords = {
         "X": {"center": "x"},
         "Y": {"center": "y"},
@@ -74,13 +73,6 @@ def test_missing_thickness_raises(grid):
     budget = {"mass": {}, "heat": {"lambda": "temperature", "lhs": {}, "rhs": {}}}
     with pytest.raises(ValueError, match="thickness"):
         xwmt.WaterMassTransformations(grid, budget)
-
-
-def test_zonal_mean_runs(grid):
-    # B1: zonal_mean previously raised NameError (bare `grid` / `landmask_name`).
-    wm = xwmt.WaterMass(grid, t_name="temperature", h_name="dz")
-    result = wm.zonal_mean(wm.grid._ds["temperature"])
-    assert np.isfinite(float(result.isel(y=0, z_l=0).values))
 
 
 def test_get_density_invalid_name_raises(grid):

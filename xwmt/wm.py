@@ -438,23 +438,6 @@ class WaterMass:
             vmin, vmax = da.min(), da.max()
         return np.linspace(vmin, vmax, nbins)
 
-    def zonal_mean(self, da, oceanmask_name="wet"):
-        """
-        Compute area-weighted zonal mean (along `X` grid axis).
-
-        Parameters
-        ----------
-        da: xarray.DataArray
-            Data array to be averaged.
-        oceanmask_name: str
-            Name of ocean mask xr.DataArray in `self.grid._ds`. Default: "wet".
-        """
-        x_name = self.grid.axes["X"].coords["center"]
-        area = self.grid.get_metric(da, ["X", "Y"])
-        num = (da * area * self.grid._ds[oceanmask_name]).sum(dim=x_name)
-        denom = (area * self.grid._ds[oceanmask_name]).sum(dim=x_name)
-        return num / denom
-
 
 def _rebuild_grid(grid, extra_coords=None, extra_boundary=None, deep=False):
     """
