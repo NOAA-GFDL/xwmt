@@ -138,6 +138,9 @@ dask-worker-space/
 docs/source/api/
 docs/source/savefig/
 docs/jupyter_execute
+# Copied from examples/ by conf.py at build time; the originals are the source
+# of truth, so committing these would duplicate every notebook.
+docs/source/examples/
 
 # Downloaded test datasets
 *.nc
