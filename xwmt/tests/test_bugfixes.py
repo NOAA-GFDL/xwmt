@@ -208,3 +208,79 @@ def test_method_not_mutated_by_prebinned_transform():
     )
     wmt.integrate_transformations("heat", bins=edges, sum_components=False)
     assert wmt.method == "xhistogram"
+
+
+def _ranged_tracer_grid():
+    """A single column whose tracer spans a real range, so bins are meaningful."""
+    nz = 8
+    ds = xr.Dataset()
+    ds = ds.assign_coords(
+        {
+            "z_i": xr.DataArray(np.linspace(0.0, 1.0, nz + 1), dims=("z_i",)),
+            "z_l": xr.DataArray(
+                0.5
+                * (
+                    np.linspace(0.0, 1.0, nz + 1)[:-1]
+                    + np.linspace(0.0, 1.0, nz + 1)[1:]
+                ),
+                dims=("z_l",),
+            ),
+        }
+    )
+    ds["dz"] = xr.DataArray(np.full((nz,), 1.0 / nz), dims=("z_l",))
+    ds["temperature"] = xr.DataArray(np.linspace(0.0, 10.0, nz), dims=("z_l",))
+    ds["so"] = xr.DataArray(np.full((nz,), 35.0), dims=("z_l",))
+    ds = ds.expand_dims(dim=("x", "y")).assign_coords(
+        {"x": xr.DataArray([1.0], dims=("x",)), "y": xr.DataArray([1.0], dims=("y",))}
+    )
+    ds = ds.assign_coords(
+        {
+            "rA": xr.DataArray([[1.0]], dims=("x", "y")),
+            "lat": xr.DataArray([[1.0]], dims=("x", "y")),
+        }
+    )
+    grid = xgcm.Grid(
+        ds,
+        coords={
+            "X": {"center": "x"},
+            "Y": {"center": "y"},
+            "Z": {"center": "z_l", "outer": "z_i"},
+        },
+        metrics={("X", "Y"): ["rA"]},
+        padding="fill",
+        autoparse_metadata=False,
+    )
+    return grid
+
+
+def test_infer_bins_accepts_dataarray():
+    # `infer_bins` took the min/max of `da` as 0-d DataArrays and handed them to
+    # `np.linspace`, which rejects them -- so the documented input (a DataArray)
+    # always raised and only `da.values` worked.
+    wm = xwmt.WaterMass(_ranged_tracer_grid(), t_name="temperature", h_name="dz")
+    bins = wm.infer_bins(wm.grid._ds.temperature, nbins=11)
+    assert bins.shape == (11,)
+    assert np.isclose(bins[0], 0.0) and np.isclose(bins[-1], 10.0)
+
+
+def test_infer_bins_percentiles_is_reachable():
+    # The `percentiles` branch was unreachable on every input: a DataArray hit the
+    # `np.linspace` bug above, and an ndarray has no `.quantile`.
+    wm = xwmt.WaterMass(_ranged_tracer_grid(), t_name="temperature", h_name="dz")
+    bins = wm.infer_bins(wm.grid._ds.temperature, percentiles=[0.25, 0.75], nbins=5)
+    assert bins.shape == (5,)
+    # Clipped to the interquartile range, so strictly inside the full 0-10 span.
+    assert bins[0] > 0.0 and bins[-1] < 10.0
+
+
+def test_integrate_transformations_default_bins():
+    # `bins=None` is the documented default of both top-level entry points, and it
+    # routes through `infer_bins` -- so the 0-d DataArray bug above meant the default
+    # call signature raised for every user. Pin the default path itself, not just the
+    # helper.
+    grid, budget, _ = _heat_tendency_grid()
+    wmt = xwmt.WaterMassTransformations(grid, budget, cp=1.0, rho_ref=1.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        transformations = wmt.integrate_transformations("heat", sum_components=False)
+    assert "tendency" in transformations

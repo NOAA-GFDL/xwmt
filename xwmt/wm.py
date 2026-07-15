@@ -465,7 +465,10 @@ class WaterMass:
             vmin, vmax = da.quantile(percentiles, dim=da.dims)
         else:
             vmin, vmax = da.min(), da.max()
-        return np.linspace(vmin, vmax, nbins)
+        # `da.min()`/`da.quantile()` return 0-d DataArrays, which `np.linspace`
+        # rejects; coerce to plain floats so a DataArray (the documented input)
+        # works, and so `percentiles` is reachable at all.
+        return np.linspace(float(vmin), float(vmax), nbins)
 
 
 def _rebuild_grid(grid, extra_coords=None, extra_padding=None, deep=False):
