@@ -68,7 +68,7 @@ def baltic_grid_and_budgets(baltic_dataset_path):
     }
     metrics = {("X", "Y"): "areacello"}
     grid = xgcm.Grid(
-        ds, coords=coords, metrics=metrics, periodic=None, autoparse_metadata=False
+        ds, coords=coords, metrics=metrics, padding="fill", autoparse_metadata=False
     )
 
     budgets_dict = xbudget.load_preset_budget(model="MOM6")
@@ -143,7 +143,7 @@ class Helpers:
             "Z": {"center": "z_l", "outer": "z_i"},
         }
         grid = xgcm.Grid(
-            ds, coords=coords, metrics=metrics, periodic=False, autoparse_metadata=False
+            ds, coords=coords, metrics=metrics, padding="fill", autoparse_metadata=False
         )
 
         budget_dict = {

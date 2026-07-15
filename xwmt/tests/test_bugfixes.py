@@ -46,7 +46,7 @@ def minimal_grid():
     }
     metrics = {("X", "Y"): ["rA"]}
     return xgcm.Grid(
-        ds, coords=coords, metrics=metrics, periodic=False, autoparse_metadata=False
+        ds, coords=coords, metrics=metrics, padding="fill", autoparse_metadata=False
     )
 
 
@@ -84,7 +84,7 @@ def _surface_grid():
         ds,
         coords={"X": {"center": "x"}, "Y": {"center": "y"}},
         metrics={("X", "Y"): "areacello"},
-        periodic=False,
+        padding="fill",
         autoparse_metadata=False,
     )
 
@@ -164,7 +164,7 @@ def _heat_tendency_grid(zname="z"):
         ds,
         coords=coords,
         metrics={("X", "Y"): ["rA"]},
-        periodic=False,
+        padding="fill",
         autoparse_metadata=False,
     )
     budget = {
