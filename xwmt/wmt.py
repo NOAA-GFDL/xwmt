@@ -587,7 +587,7 @@ class WaterMassTransformations(WaterMass):
             method = "xgcm"
         else:
             if self._zc in lam.dims:
-                lam_i = self.grid.interp(lam, "Z", boundary="extend").rename(
+                lam_i = self.grid.interp(lam, "Z", padding="extend").rename(
                     f"{lam.name}_i"
                 )
             else:

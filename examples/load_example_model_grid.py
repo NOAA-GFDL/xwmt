@@ -47,16 +47,16 @@ def construct_grid(ds):
             "Y": {"center": "yh", "outer": "yq"},
             "Z": {"center": "sigma2_l", "outer": "sigma2_i"},
         }
-        boundary = {"X": "periodic", "Y": "extend", "Z": "extend"}
+        padding = {"X": "periodic", "Y": "extend", "Z": "extend"}
     else:
         coords = {
             "X": {"center": "xh", "outer": "xq"},
             "Y": {"center": "yh", "outer": "yq"},
         }
-        boundary = {"X": "periodic", "Y": "extend"}
+        padding = {"X": "periodic", "Y": "extend"}
 
     metrics = {("X", "Y"): "areacello"}
     grid = xgcm.Grid(
-        ds, coords=coords, metrics=metrics, boundary=boundary, autoparse_metadata=False
+        ds, coords=coords, metrics=metrics, padding=padding, autoparse_metadata=False
     )
     return grid

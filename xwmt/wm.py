@@ -126,7 +126,7 @@ class WaterMass:
             self.grid = _rebuild_grid(
                 self.grid,
                 extra_coords={"Z": {"center": "z_l", "outer": "z_i"}},
-                extra_boundary={"Z": "extend"},
+                extra_padding={"Z": "extend"},
             )
             self.Z_metrics = {
                 "center": self.grid._ds[f"{self.h_name}"],
@@ -468,10 +468,10 @@ class WaterMass:
         return np.linspace(vmin, vmax, nbins)
 
 
-def _rebuild_grid(grid, extra_coords=None, extra_boundary=None, deep=False):
+def _rebuild_grid(grid, extra_coords=None, extra_padding=None, deep=False):
     """
     Reconstruct an `xgcm.Grid` from an existing one, preserving its coords, metrics, and
-    boundary settings, and optionally adding more via `extra_coords`/`extra_boundary`.
+    padding settings, and optionally adding more via `extra_coords`/`extra_padding`.
 
     Parameters
     ----------
@@ -479,8 +479,8 @@ def _rebuild_grid(grid, extra_coords=None, extra_boundary=None, deep=False):
         Source grid to copy the configuration (and dataset) from.
     extra_coords : dict, optional
         Additional `coords` entries to merge in (e.g. a new "Z" axis).
-    extra_boundary : dict, optional
-        Additional `boundary` entries to merge in.
+    extra_padding : dict, optional
+        Additional `padding` entries to merge in.
     deep : bool (default: False)
         If True, deep-copy the underlying dataset so the source is never mutated.
     """
@@ -492,16 +492,16 @@ def _rebuild_grid(grid, extra_coords=None, extra_boundary=None, deep=False):
             **(extra_coords or {}),
         },
         metrics={k: vv.name for (k, v) in grid._metrics.items() for vv in v},
-        boundary={
-            **{ax: grid.axes[ax]._boundary for ax in grid.axes.keys()},
-            **(extra_boundary or {}),
+        padding={
+            **{ax: grid.axes[ax].padding for ax in grid.axes.keys()},
+            **(extra_padding or {}),
         },
         autoparse_metadata=False,
     )
 
 
-def add_gridcoords(grid, coords, boundary):
-    new_grid = _rebuild_grid(grid, extra_coords=coords, extra_boundary=boundary)
+def add_gridcoords(grid, coords, padding):
+    new_grid = _rebuild_grid(grid, extra_coords=coords, extra_padding=padding)
     # Preserve a Z_metrics attribute if a caller attached one to the raw grid.
     if "Z_metrics" in vars(grid):
         new_grid.Z_metrics = grid.Z_metrics
