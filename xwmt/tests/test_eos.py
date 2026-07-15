@@ -54,7 +54,7 @@ def _grid(t=(18.0, 12.0, 5.0), s=(35.0, 35.2, 34.9), lat=30.0, lon=0.0):
         ds,
         coords=coords,
         metrics={("X", "Y"): ["rA"]},
-        periodic=False,
+        padding="fill",
         autoparse_metadata=False,
     )
 
