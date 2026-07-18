@@ -5,7 +5,7 @@ from xhistogram.xarray import histogram
 import warnings
 
 from xbudget import flatten_lol
-from xwmt.wm import WaterMass
+from xwmt.wm import WaterMass, _EOS_UNSET
 from xwmt.compute import calc_hlamdot_tendency
 
 
@@ -33,13 +33,14 @@ class WaterMassTransformations(WaterMass):
         grid,
         xbudget_dict,
         mask=None,
-        teos10=True,
+        eos=_EOS_UNSET,
         cp=3992.0,
         rho_ref=1035.0,
         t_var="conservative",
         s_var="absolute",
         method="default",
         rebin=False,
+        teos10=None,
     ):
         """
         Create a new WaterMassTransformation object from an input xgcm.Grid and xbudget dictionary.
@@ -58,8 +59,11 @@ class WaterMassTransformations(WaterMass):
         mask : xr.DataArray (default: None)
             Boolean region mask (with same X and Y grid dimensions as `grid._ds` variables).
             If None, generate an all-True mask for domain-wide calculations.
-        teos10 : bool (default: True)
-            Use Thermodynamic Equation Of Seawater - 2010 (TEOS-10). True by default.
+        eos : str, xeos.EquationOfState, or None (default: "teos10")
+            Equation of state used to derive density and the expansion/contraction
+            coefficients. A canonical `xeos` EOS id (see `xwmt.eos.list_eos()`),
+            an `xeos.EquationOfState`, or None (alpha/beta/density provided in
+            `grid._ds`). See `WaterMass` for details.
         cp : float (default: 3992.0, the MOM6 default value)
             Value of specific heat capacity.
         rho_ref : float (default: 1035.0, the MOM6 default value)
@@ -77,6 +81,10 @@ class WaterMassTransformations(WaterMass):
         rebin : bool (default: False)
             Set to True to force a transformation into the target coordinates, even if these
             coordinates already exist in the `grid` data structure.
+        teos10 : bool, optional
+            Deprecated. Use `eos` instead. `teos10=True` selects `eos="teos10"`;
+            `teos10=False` maps to `eos=None` (which requires alpha/beta/density to
+            be present in `grid._ds`). An explicit `eos=` always takes precedence.
         """
 
         valid_methods = ("default", "xhistogram", "xgcm")
@@ -112,11 +120,12 @@ class WaterMassTransformations(WaterMass):
             grid,
             t_name=self.tracer_dict.get("heat"),  # defaults to None if not available
             s_name=self.tracer_dict.get("salt"),  # defaults to None if not available
-            teos10=teos10,
+            eos=eos,
             cp=cp,
             rho_ref=rho_ref,
             t_var=t_var,
             s_var=s_var,
+            teos10=teos10,
             **kwargs,
         )
 

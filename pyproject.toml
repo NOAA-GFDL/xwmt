@@ -25,6 +25,11 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
+    # Equations of state are delegated to `xeos`, which vendors the JMD95/Wright/
+    # UNESCO/MDJWF/Roquet/MPAS kernels as pure-numpy and pulls in `gsw` for TEOS-10.
+    "xeos[teos10] >= 0.1.0",
+    # Used directly by xwmt for pressure (`gsw.p_from_z`) and temperature/salinity
+    # kind conversions (e.g. `gsw.CT_from_pt`, `gsw.SA_from_SP`).
     "gsw >= 3.4.0",
     "numpy >= 1.23",
     # Required by xgcm's `transform` (conservative remapping), which xwmt uses for
