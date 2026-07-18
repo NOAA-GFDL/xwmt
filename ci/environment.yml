@@ -3,10 +3,13 @@ channels:
   - conda-forge
   - nodefaults
 dependencies:
-  - python>=3.12
-  - black
+  # Leave python unpinned so the CI matrix (setup-miniconda) owns the version;
+  # pinning it here (e.g. >=3.12) silently upgrades the 3.11 matrix cell.
+  - python
+  - black>=26
   - pylint
   - pytest
+  - pytest-cov
   - netcdf4
   - gsw
   - pip

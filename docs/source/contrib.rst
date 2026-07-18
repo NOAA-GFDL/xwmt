@@ -16,7 +16,30 @@ Creating a development environment
 
     conda env update -f docs/environment.yml
     conda activate docs_env_xwmt
-    pip install -e .
+    pip install -e ".[dev]"
+
+The ``[dev]`` extra installs the testing and linting tools (``pytest``,
+``black``, ``pylint``, ``netcdf4``); use ``[test]`` for just the testing tools.
+
+Running the tests
+-----------------
+
+.. code-block:: bash
+
+    pytest -v
+
+The functional tests download a small MOM6 test dataset on first run (cached
+locally and integrity-checked); they skip cleanly when offline.
+
+Code style
+----------
+
+Code is formatted with `black <https://black.readthedocs.io>`_, which the CI
+enforces. Before committing:
+
+.. code-block:: bash
+
+    black xwmt/
 
 Locally building the documentation
 ----------------------------------
