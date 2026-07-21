@@ -139,3 +139,12 @@ the ones actually present in the dataset.
   `self.Z_metrics`, not on the `xgcm.Grid`. Grid reconstruction goes through `_rebuild_grid`.
 - Use the coordinate-name properties (`self._zc`, `self._zi`, `self._xc`, `self._yc`,
   `self._horizontal_dims`) instead of re-deriving `self.grid.axes['Z'].coords['center']` inline.
+- **Multi-tile grids** (e.g. ECCOv4r4's 13-tile lat-lon-cap grid): when the input
+  `xgcm.Grid` carries `face_connections`, `self._facedim` is the tile-dimension name
+  (via xgcm's `_facedim`) and `self._horizontal_dims` prepends it, so horizontal
+  integrations/binning broadcast across tiles automatically. `_rebuild_grid` must
+  preserve `face_connections` or the face dim is silently dropped on the deep copy
+  (issue #59). xwmt does no *horizontal* interpolation (all `grid.transform`/`interp`/
+  `cumsum`/`diff` are along `Z`), so no face-connectivity math is needed — only the
+  reduction dims. The heavy real-data check lives in `test_multitile_ecco.py`, gated
+  off CI behind `XWMT_TEST_ECCO`; the fast synthetic 2-tile guard is in `test_bugfixes.py`.

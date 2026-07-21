@@ -208,3 +208,124 @@ def test_method_not_mutated_by_prebinned_transform():
     )
     wmt.integrate_transformations("heat", bins=edges, sum_components=False)
     assert wmt.method == "xhistogram"
+
+
+def _multitile_heat_grid(nz=6, ny=3, nx=4):
+    """A 2-tile (LLC-like) grid carrying a heat tendency and `face_connections`,
+    together with the matching pair of single-tile grids, for the issue-#59
+    "broadcast across tiles" tests.
+
+    The two tiles are glued along Y via `face_connections`, giving the grid a
+    `face` dimension in addition to X/Y — exactly the topology (in miniature)
+    that xwmt must reduce over when integrating on a multi-tile grid such as
+    ECCOv4r4's 13-tile lat-lon-cap grid.
+    """
+    z_i = np.linspace(0.0, 1.0, nz + 1)
+    z_l = 0.5 * (z_i[:-1] + z_i[1:])
+    f, z, y, x = np.meshgrid(
+        np.arange(2), z_l, np.arange(ny), np.arange(nx), indexing="ij"
+    )
+    # Temperature in [0, 1) with a distinct structure on each tile, so binning is
+    # non-trivial and the two tiles populate different bins.
+    temperature = (z + 0.13 * y + 0.07 * x + 0.29 * f) % 1.0
+    # Extensive (layer-integrated) heat tendency, varying in space and by tile.
+    dz = np.broadcast_to(np.diff(z_i)[None, :, None, None], temperature.shape)
+    heat_tendency = (np.cos(2.0 * np.pi * z) + 0.5 * f + 0.1 * x) * dz
+
+    def _ds(face=None):
+        """Full 2-tile dataset (face=None) or the single tile `face`."""
+        pick = (lambda a: a) if face is None else (lambda a: a[face])
+        spatial = ("face", "z_l", "y", "x") if face is None else ("z_l", "y", "x")
+        area = ("face", "y", "x") if face is None else ("y", "x")
+        ds = xr.Dataset()
+        coords = {
+            "x": np.arange(nx, dtype=float),
+            "y": np.arange(ny, dtype=float),
+            "z_l": z_l,
+            "z_i": z_i,
+        }
+        if face is None:
+            coords["face"] = np.arange(2)
+        ds = ds.assign_coords(coords)
+        ds["temperature"] = (spatial, pick(temperature))
+        ds["heat_tendency"] = (spatial, pick(heat_tendency))
+        ds["dz"] = (spatial, pick(dz))
+        ds["rA"] = (area, np.ones((2, ny, nx) if face is None else (ny, nx)))
+        return ds
+
+    coords = {
+        "X": {"center": "x"},
+        "Y": {"center": "y"},
+        "Z": {"center": "z_l", "outer": "z_i"},
+    }
+    face_connections = {
+        "face": {
+            0: {"Y": (None, (1, "Y", False))},
+            1: {"Y": ((0, "Y", False), None)},
+        }
+    }
+
+    def _grid(ds, multitile):
+        kw = {"face_connections": face_connections} if multitile else {}
+        return xgcm.Grid(
+            ds,
+            coords=coords,
+            metrics={("X", "Y"): ["rA"]},
+            padding="fill",
+            autoparse_metadata=False,
+            **kw,
+        )
+
+    full = _grid(_ds(), multitile=True)
+    tiles = [_grid(_ds(n), multitile=False) for n in range(2)]
+    budget = {
+        "mass": {"lambda": None, "thickness": "dz", "lhs": {}, "rhs": {}},
+        "heat": {
+            "lambda": "temperature",
+            "lhs": {"tendency": "heat_tendency"},
+            "rhs": {},
+        },
+        "salt": {"lambda": None, "lhs": {}, "rhs": {}},
+    }
+    bins = np.linspace(0.0, 1.0, 9)
+    return full, tiles, budget, bins
+
+
+def test_multitile_facedim_preserved():
+    # issue #59: the face/tile dim (xgcm `_facedim`) must survive WaterMass's
+    # deep-copy of the grid via `_rebuild_grid` and appear in the horizontal
+    # reduction dims. Before the fix, `_rebuild_grid` dropped `face_connections`,
+    # so `_facedim` was silently lost on the copy.
+    full, _tiles, budget, _bins = _multitile_heat_grid()
+    wmt = xwmt.WaterMassTransformations(full, budget, cp=1.0, rho_ref=1.0)
+    assert wmt._facedim == "face"
+    assert wmt._horizontal_dims == ["face", "x", "y"]
+
+
+@pytest.mark.parametrize("method", ["xhistogram", "xgcm"])
+def test_multitile_broadcast_equivalence(method):
+    # issue #59: integrating transformations over a multi-tile grid must equal the
+    # sum of the per-tile single-tile integrations, since binning `hlamdot` into
+    # lambda space and summing over the horizontal are both linear in the tiles.
+    # This pins that the `face` dimension is correctly included in the reduction.
+    full, tiles, budget, bins = _multitile_heat_grid()
+
+    def integrate(grid):
+        wmt = xwmt.WaterMassTransformations(
+            grid, budget, cp=1.0, rho_ref=1.0, method=method
+        )
+        return wmt.integrate_transformations("heat", bins=bins, sum_components=False)[
+            "tendency"
+        ]
+
+    full_transformation = integrate(full)
+    tiles_transformation = sum(integrate(g) for g in tiles)
+
+    # The transformation is non-trivial (otherwise the equality would be vacuous).
+    assert np.any(np.abs(np.nan_to_num(full_transformation.values)) > 0.0)
+    assert np.allclose(
+        np.nan_to_num(full_transformation.values),
+        np.nan_to_num(tiles_transformation.values),
+        rtol=1e-10,
+        atol=1e-12,
+    )
