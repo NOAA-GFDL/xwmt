@@ -71,13 +71,14 @@ def baltic_grid_and_budgets(baltic_dataset_path):
         ds, coords=coords, metrics=metrics, padding="fill", autoparse_metadata=False
     )
 
-    budgets_dict = xbudget.load_preset_budget(model="MOM6")
+    recipe = xbudget.load_preset_budget(model="MOM6")
     # The test data set does not include sea ice melt diagnostics
-    del budgets_dict["mass"]["rhs"]["sum"]["surface_exchange_flux"]["sum"][
-        "sea_ice_melt"
-    ]
-    xbudget.collect_budgets(grid, budgets_dict)
-    simple_budgets = xbudget.aggregate(budgets_dict)
+    del recipe["mass"]["rhs"]["sum"]["surface_exchange_flux"]["sum"]["sea_ice_melt"]
+    # `collect_budgets` materializes the derived diagnostics into the dataset,
+    # and `BudgetQuery` is the queryable interface used to aggregate each budget
+    # to its top-level terms.
+    xbudget.collect_budgets(grid, recipe)
+    simple_budgets = xbudget.BudgetQuery(grid, recipe).aggregate()
     return grid, simple_budgets
 
 

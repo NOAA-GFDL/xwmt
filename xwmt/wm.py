@@ -44,7 +44,12 @@ class WaterMass:
             Name of the salinity variable in ds. Its kind (absolute/practical)
             is declared by `s_var`.
         h_name: str (default: "thkcello")
-            Name of thickness variable [in m] in ds.
+            Name of the layer-thickness variable [in m] in ds. This is the mass
+            budget's prognostic state variable and a core requirement of
+            WaterMass: it is interpolated to interfaces and integrated to build
+            the vertical metrics (`Z_metrics`) and depth coordinates. When
+            constructed via `WaterMassTransformations`, it is taken from the mass
+            budget's `thickness` metadata (`recipe["mass"]["thickness"]`).
         eos : str, xeos.EquationOfState, or None (default: "teos10")
             Equation of state used to derive density and the expansion/contraction
             coefficients `alpha`/`beta`. Either a canonical `xeos` EOS id (see
