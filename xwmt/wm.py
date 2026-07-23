@@ -44,7 +44,12 @@ class WaterMass:
             Name of the salinity variable in ds. Its kind (absolute/practical)
             is declared by `s_var`.
         h_name: str (default: "thkcello")
-            Name of thickness variable [in m] in ds.
+            Name of the layer-thickness variable [in m] in ds. This is the mass
+            budget's prognostic state variable and a core requirement of
+            WaterMass: it is interpolated to interfaces and integrated to build
+            the vertical metrics (`Z_metrics`) and depth coordinates. When
+            constructed via `WaterMassTransformations`, it is taken from the mass
+            budget's `thickness` metadata (`recipe["mass"]["thickness"]`).
         eos : str, xeos.EquationOfState, or None (default: "teos10")
             Equation of state used to derive density and the expansion/contraction
             coefficients `alpha`/`beta`. Either a canonical `xeos` EOS id (see
@@ -194,9 +199,28 @@ class WaterMass:
         return self.grid.axes["Z"].coords["outer"]
 
     @property
+    def _facedim(self):
+        """
+        Name of the face/tile dimension for multi-tile grids (e.g. the 13-tile
+        ECCO/LLC lat-lon-cap grid), or None for an ordinary single-tile grid.
+
+        Read from the underlying `xgcm.Grid`'s face-connection metadata (xgcm
+        stores it as `_facedim` when the grid is built with `face_connections`),
+        following the same accessor convention as the `sectionate` package.
+        """
+        return getattr(self.grid, "_facedim", None)
+
+    @property
     def _horizontal_dims(self):
-        """Names of the horizontal (X, Y) center coordinates."""
-        return [self._xc, self._yc]
+        """
+        Names of the horizontal dimensions to reduce over when integrating: the
+        X and Y center coordinates, plus the face/tile dimension for multi-tile
+        grids. Including the face dimension is what lets horizontal integrations
+        (and lambda-space binning) broadcast across tiles on multi-tile grids
+        such as ECCOv4r4 (see GitHub issue #59).
+        """
+        facedim = self._facedim
+        return ([facedim] if facedim is not None else []) + [self._xc, self._yc]
 
     def get_density(self, density_name="rho"):
         """
@@ -488,6 +512,13 @@ def _rebuild_grid(grid, extra_coords=None, extra_padding=None, deep=False):
         If True, deep-copy the underlying dataset so the source is never mutated.
     """
     ds = grid._ds.copy() if deep else grid._ds
+    # Preserve multi-tile topology (e.g. the ECCO/LLC `face_connections`) across
+    # reconstruction. Without this, the deep copy made in `WaterMass.__init__`
+    # would silently drop the face dimension (xgcm's `_facedim`), and horizontal
+    # integrations would no longer broadcast across tiles (see issue #59). xgcm
+    # stores the original mapping on the grid as `_face_connections`.
+    face_connections = getattr(grid, "_face_connections", None)
+    extra = {"face_connections": face_connections} if face_connections else {}
     return xgcm.Grid(
         ds,
         coords={
@@ -500,6 +531,7 @@ def _rebuild_grid(grid, extra_coords=None, extra_padding=None, deep=False):
             **(extra_padding or {}),
         },
         autoparse_metadata=False,
+        **extra,
     )
 
 

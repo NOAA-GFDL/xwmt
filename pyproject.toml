@@ -38,7 +38,10 @@ dependencies = [
     "xarray >= 2022.3.0",
     "xhistogram >= 0.3.0",
     "xgcm >= 0.10.0",
-    "xbudget >= 0.6.0",
+    # 0.7.0 removed the old top-level `aggregate()`/`flatten_lol`; xwmt's
+    # test/example flow uses `collect_budgets` + `BudgetQuery(...).aggregate()`
+    # instead. See the xbudget 0.7 CHANGELOG.
+    "xbudget >= 0.7.0",
 ]
 
 [project.optional-dependencies]

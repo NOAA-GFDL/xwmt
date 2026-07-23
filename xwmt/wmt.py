@@ -4,9 +4,52 @@ import xarray as xr
 from xhistogram.xarray import histogram
 import warnings
 
-from xbudget import flatten_lol
 from xwmt.wm import WaterMass, _EOS_UNSET
 from xwmt.compute import calc_hlamdot_tendency
+
+
+def flatten_lol(lol):
+    """Flatten a (possibly nested) list of lists into a single flat list.
+
+    Previously imported from `xbudget`, which dropped it from its public API in
+    0.7.0. Kept local since it is trivial and the only use is flattening
+    `lambdas_dict.values()` (a mix of scalar variable names and the list of
+    density names). Strings are treated as atoms, not iterated character-by-character.
+    """
+
+    def _flatten(container):
+        for item in container:
+            if isinstance(item, (list, tuple)):
+                yield from _flatten(item)
+            else:
+                yield item
+
+    return list(_flatten(lol))
+
+
+def _resolve_recipe(recipe, xbudget_dict, func):
+    """Return the recipe, honoring the deprecated ``xbudget_dict`` alias.
+
+    ``xbudget_dict`` was the historical name for the xbudget recipe dict (renamed
+    to ``recipe`` in xbudget 0.7.0). It is still accepted as a keyword so existing
+    callers keep working, but it warns and will be removed in a future version.
+    """
+    if xbudget_dict is not None:
+        if recipe is not None:
+            raise TypeError(
+                f"{func}() received both `recipe` and the deprecated "
+                f"`xbudget_dict`; pass only `recipe`."
+            )
+        warnings.warn(
+            f"The `xbudget_dict` argument of {func}() is deprecated and will be "
+            f"removed in a future version; pass the recipe as `recipe` instead.",
+            FutureWarning,
+            stacklevel=3,
+        )
+        return xbudget_dict
+    if recipe is None:
+        raise TypeError(f"{func}() missing required argument: 'recipe'")
+    return recipe
 
 
 class WaterMassTransformations(WaterMass):
@@ -28,10 +71,32 @@ class WaterMassTransformations(WaterMass):
         """Component-specific variable name, e.g. ('diffusion', 'heat') -> 'diffusion_heat'."""
         return f"{base}{cls._component_suffix(component)}"
 
+    # Sentinel distinguishing "metadata key absent" from "present but None"
+    # (a tracer may legitimately declare `lambda: None`).
+    _UNSET = object()
+
+    @classmethod
+    def _budget_metadata(cls, recipe, budget, keys):
+        """Value of the first *present* key among `keys` in a budget's metadata.
+
+        Budget metadata (`lambda`, `surface_lambda`, `thickness`) sits at the top
+        level of each budget in both the raw recipe and the aggregated dict, so
+        this one accessor centralizes reading it (mirrors
+        `xbudget.BudgetQuery.metadata`). `keys` is tried in order, so a tracer
+        that declares only `surface_lambda` still resolves. Presence is what
+        matters: a key present with value `None` returns `None`; returns the
+        `_UNSET` sentinel only when none of `keys` is present.
+        """
+        body = recipe.get(budget, {})
+        for key in keys:
+            if key in body:
+                return body[key]
+        return cls._UNSET
+
     def __init__(
         self,
         grid,
-        xbudget_dict,
+        recipe=None,
         mask=None,
         eos=_EOS_UNSET,
         cp=3992.0,
@@ -41,6 +106,8 @@ class WaterMassTransformations(WaterMass):
         method="default",
         rebin=False,
         teos10=None,
+        *,
+        xbudget_dict=None,
     ):
         """
         Create a new WaterMassTransformation object from an input xgcm.Grid and xbudget dictionary.
@@ -49,13 +116,13 @@ class WaterMassTransformations(WaterMass):
         ----------
         grid : xgcm.Grid
             Contains information about ocean model grid coordinates, metrics, and data variables.
-        xbudget_dict : dict
+        recipe : dict
             Nested dictionary containing information about lambda and tendency variable names.
             See the `xbudget` package documentation (https://github.com/hdrake/xbudget) for how
-            this dictionary should be structured. In particular, the `xbudget/conventions`
+            this dictionary should be structured. In particular, the `xbudget/recipes`
             directory contains example `.yaml` files that can be read in as preset dictionaries.
             The `MOM6.yaml` file provides a comprehensive description of the mass, heat, and salt
-            budgets in MOM6 (github.com/hdrake/xbudget/blob/main/xbudget/conventions/MOM6.yaml).
+            budgets in MOM6 (github.com/hdrake/xbudget/blob/main/xbudget/recipes/MOM6.yaml).
         mask : xr.DataArray (default: None)
             Boolean region mask (with same X and Y grid dimensions as `grid._ds` variables).
             If None, generate an all-True mask for domain-wide calculations.
@@ -86,6 +153,7 @@ class WaterMassTransformations(WaterMass):
             `teos10=False` maps to `eos=None` (which requires alpha/beta/density to
             be present in `grid._ds`). An explicit `eos=` always takes precedence.
         """
+        recipe = _resolve_recipe(recipe, xbudget_dict, "WaterMassTransformations")
 
         valid_methods = ("default", "xhistogram", "xgcm")
         if method not in valid_methods:
@@ -95,26 +163,33 @@ class WaterMassTransformations(WaterMass):
         self.method = method
         self.mask = mask
         self.rebin = rebin
+
+        # Read the budget metadata that maps tracers to their lambda coordinate
+        # and the mass budget to its layer-thickness variable. These live at the
+        # top level of each budget (carried through by xbudget's aggregate /
+        # BudgetQuery), so this single accessor works whether `recipe` is a
+        # raw recipe or an aggregated dict.
         self.tracer_dict = {}
-        tracers = [k for k in xbudget_dict.keys() if k != "mass"]
+        tracers = [k for k in recipe.keys() if k != "mass"]
         for tracer in tracers:
-            if "lambda" in xbudget_dict[tracer]:
-                self.tracer_dict[tracer] = xbudget_dict[tracer]["lambda"]
-            elif "surface_lambda" in xbudget_dict[tracer]:
-                self.tracer_dict[tracer] = xbudget_dict[tracer]["surface_lambda"]
-            else:
+            lam = self._budget_metadata(recipe, tracer, ("lambda", "surface_lambda"))
+            if lam is self._UNSET:
                 raise ValueError(
-                    f"""xbudget_dict must contain element `["{tracer}"]["lambda"]` `["{tracer}"]["surface_lambda"]`"""
+                    f"""recipe must contain element `["{tracer}"]["lambda"]` `["{tracer}"]["surface_lambda"]`"""
                 )
+            self.tracer_dict[tracer] = lam
 
         # `mass` must be present, but `thickness` within it is optional: when it is
         # omitted, `h_name` keeps its default. This supports surface-only water-mass
         # transformations (e.g. `{"mass": {}}`), where no layer thickness is needed.
+        # The mass budget's `thickness` is its prognostic layer-thickness variable
+        # and the core input WaterMass needs to build its vertical metrics.
         kwargs = {}
-        if "mass" not in xbudget_dict:
-            raise ValueError("""xbudget_dict must contain a `["mass"]` entry.""")
-        if "thickness" in xbudget_dict["mass"]:
-            kwargs["h_name"] = xbudget_dict["mass"]["thickness"]
+        if "mass" not in recipe:
+            raise ValueError("""recipe must contain a `["mass"]` entry.""")
+        thickness = self._budget_metadata(recipe, "mass", ("thickness",))
+        if thickness is not self._UNSET:
+            kwargs["h_name"] = thickness
 
         super().__init__(
             grid,
@@ -136,12 +211,36 @@ class WaterMassTransformations(WaterMass):
                 **{"density": ["sigma0", "sigma1", "sigma2", "sigma3", "sigma4"]},
             }
 
-        self.xbudget_dict = copy.deepcopy(xbudget_dict)
-        for term, bdict in self.xbudget_dict.items():
+        self.recipe = copy.deepcopy(recipe)
+        for term, bdict in self.recipe.items():
             setattr(self, f"processes_{term}_dict", {})
             for ptype, _processes in bdict.items():
                 if ptype in ["lhs", "rhs"]:
                     getattr(self, f"processes_{term}_dict").update(_processes)
+
+    @property
+    def xbudget_dict(self):
+        """Deprecated alias for :attr:`recipe` (renamed in step with xbudget 0.7.0)."""
+        warnings.warn(
+            "`WaterMassTransformations.xbudget_dict` is deprecated and will be "
+            "removed in a future version; use `.recipe` instead.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return self.recipe
+
+    @xbudget_dict.setter
+    def xbudget_dict(self, value):
+        # It was a plain instance attribute before the rename, so assignment has
+        # to keep working -- a read-only property would turn a deprecation into a
+        # hard AttributeError for existing callers.
+        warnings.warn(
+            "`WaterMassTransformations.xbudget_dict` is deprecated and will be "
+            "removed in a future version; assign to `.recipe` instead.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        self.recipe = value
 
     def lambdas(self, lambda_key=None):
         """
@@ -158,7 +257,7 @@ class WaterMassTransformations(WaterMass):
 
         Example
         -------
-        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt = WaterMassTransformations(grid, recipe)
         >>> wmt.lambdas()
         ['thetao', 'so', 'sigma0', 'sigma1', 'sigma2', 'sigma3', 'sigma4']
         """
@@ -183,7 +282,7 @@ class WaterMassTransformations(WaterMass):
 
         Example
         -------
-        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt = WaterMassTransformations(grid, recipe)
         >>> wmt.get_lambda_var("heat")
         'thetao'
 
@@ -219,7 +318,7 @@ class WaterMassTransformations(WaterMass):
 
         Example
         -------
-        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt = WaterMassTransformations(grid, recipe)
         >>> wmt.get_lambda_key("thetao")
         'heat'
 
@@ -248,7 +347,7 @@ class WaterMassTransformations(WaterMass):
         tracer : str
             Supported options: ["heat", "salt"]
         term : str
-            key for tendency variable in the xbudget_dict
+            key for tendency variable in the recipe
 
         Returns
         -------
@@ -257,7 +356,7 @@ class WaterMassTransformations(WaterMass):
 
         Example
         -------
-        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt = WaterMassTransformations(grid, recipe)
         >>> wmt.process_names("heat", "diffusion")
         ('thetao', 'opottempdiff')
         """
@@ -271,7 +370,7 @@ class WaterMassTransformations(WaterMass):
 
     def available_processes(self, available=True):
         """
-        Get a list of all tendency processes that are both specified by `xbudget_dict` and available in
+        Get a list of all tendency processes that are both specified by `recipe` and available in
         the dataset.
 
         Parameters
@@ -283,12 +382,12 @@ class WaterMassTransformations(WaterMass):
         -------
         processes : list of str
 
-        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt = WaterMassTransformations(grid, recipe)
         >>> processes = wmt.available_processes()
         ['diffusion']
         """
         processes = set()
-        for tracer in self.xbudget_dict.keys():
+        for tracer in self.recipe.keys():
             processes |= getattr(self, f"processes_{tracer}_dict").keys()
         if available:
             _processes = []
@@ -297,7 +396,7 @@ class WaterMassTransformations(WaterMass):
                     [
                         getattr(self, f"processes_{tracer}_dict").get(process, None)
                         in self.grid._ds
-                        for tracer in self.xbudget_dict.keys()
+                        for tracer in self.recipe.keys()
                         if getattr(self, f"processes_{tracer}_dict").get(process, None)
                         is not None
                     ]
@@ -316,7 +415,7 @@ class WaterMassTransformations(WaterMass):
         component : str
             Supported options: ["heat", "salt"]
         term : str
-            key for tendency variable in the xbudget_dict
+            key for tendency variable in the recipe
 
         Returns
         -------
@@ -324,7 +423,7 @@ class WaterMassTransformations(WaterMass):
 
         Example
         --------
-        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt = WaterMassTransformations(grid, recipe)
         >>> ddict = wmt.datadict("heat", "diffusion")
         """
         tracer_name, process = self.process_names(tracer, term)
@@ -372,7 +471,7 @@ class WaterMassTransformations(WaterMass):
         Parameters
         ----------
         term : str
-            key for tendency variable in the xbudget_dict
+            key for tendency variable in the recipe
 
         Returns
         -------
@@ -381,7 +480,7 @@ class WaterMassTransformations(WaterMass):
 
         Example
         --------
-        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt = WaterMassTransformations(grid, recipe)
         >>> wmt.get_density()
         >>> (rho_tend_heat, rho_tend_salt) = wmt.rho_tend("diffusion")
         """
@@ -416,7 +515,7 @@ class WaterMassTransformations(WaterMass):
         lambda_name : str
             Specifies lambda
         term : str
-            key for tendency variable in the xbudget_dict
+            key for tendency variable in the recipe
 
         Returns
         ----------
@@ -424,7 +523,7 @@ class WaterMassTransformations(WaterMass):
 
         Example
         --------
-        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt = WaterMassTransformations(grid, recipe)
         >>> (hlamdot, lam) = wmt.calc_hlamdot_and_lambda("heat", "diffusion")
         """
 
@@ -503,7 +602,7 @@ class WaterMassTransformations(WaterMass):
                 )
 
         else:
-            raise ValueError(f"{lambda_name} is not available in the xbudget_dict.")
+            raise ValueError(f"{lambda_name} is not available in the recipe.")
 
         try:
             return hlamdot, lam
@@ -742,10 +841,10 @@ class WaterMassTransformations(WaterMass):
                     suffixes = [self._component_suffix(c) for c in self._COMPONENTS] + [
                         ""
                     ]
-                    budget = self.xbudget_dict["heat"]
+                    budget = self.recipe["heat"]
                 else:
                     suffixes = [""]
-                    budget = self.xbudget_dict[lambda_key]
+                    budget = self.recipe[lambda_key]
                 for suffix in suffixes:
                     if "lhs" in budget:
                         self._sum_terms(
@@ -820,7 +919,7 @@ class WaterMassTransformations(WaterMass):
 
         Example
         --------
-        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt = WaterMassTransformations(grid, recipe)
         >>> wmt_rates = wmt.map_transformations("heat", term=["diffusion"])
 
         See also
@@ -885,7 +984,7 @@ class WaterMassTransformations(WaterMass):
 
         Example
         --------
-        >>> wmt = WaterMassTransformations(grid, xbudget_dict)
+        >>> wmt = WaterMassTransformations(grid, recipe)
         >>> wmt_rates = wmt.map_transformations("heat", term=["diffusion"])
 
         See also
