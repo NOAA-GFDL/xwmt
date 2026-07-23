@@ -5,6 +5,7 @@ silently ignored. These paths build a tiny single-column synthetic grid so they
 run without the downloaded Baltic dataset.
 """
 
+import copy
 import warnings
 
 import numpy as np
@@ -66,6 +67,117 @@ def test_invalid_method_raises(grid):
     # B10: an unsupported `method` should fail fast with a clear ValueError.
     with pytest.raises(ValueError, match="method"):
         xwmt.WaterMassTransformations(grid, FULL_BUDGET, method="bogus")
+
+
+# -- `xbudget_dict` -> `recipe` rename: the deprecation shim -----------------
+
+
+def test_recipe_positional_still_works(grid):
+    """The historical positional call is unaffected by the rename."""
+    wmt = xwmt.WaterMassTransformations(grid, FULL_BUDGET)
+    assert wmt.recipe["heat"]["lambda"] == "temperature"
+
+
+def test_deprecated_xbudget_dict_kwarg_warns(grid):
+    with pytest.warns(FutureWarning, match="xbudget_dict"):
+        wmt = xwmt.WaterMassTransformations(grid, xbudget_dict=FULL_BUDGET)
+    assert wmt.recipe["heat"]["lambda"] == "temperature"
+
+
+def test_recipe_and_xbudget_dict_together_raises(grid):
+    with pytest.raises(TypeError, match="both"):
+        xwmt.WaterMassTransformations(grid, FULL_BUDGET, xbudget_dict=FULL_BUDGET)
+
+
+def test_recipe_missing_raises(grid):
+    with pytest.raises(TypeError, match="recipe"):
+        xwmt.WaterMassTransformations(grid)
+
+
+def test_deprecated_xbudget_dict_property_warns(grid):
+    wmt = xwmt.WaterMassTransformations(grid, FULL_BUDGET)
+    with pytest.warns(FutureWarning, match="xbudget_dict"):
+        assert wmt.xbudget_dict is wmt.recipe
+
+
+def test_deprecated_xbudget_dict_property_is_settable(grid):
+    """It was a plain attribute before, so assignment must keep working."""
+    wmt = xwmt.WaterMassTransformations(grid, FULL_BUDGET)
+    with pytest.warns(FutureWarning, match="xbudget_dict"):
+        wmt.xbudget_dict = {"mass": {}}
+    assert wmt.recipe == {"mass": {}}
+
+
+def test_internals_do_not_use_the_deprecated_property(grid):
+    """Normal use must not trip xwmt's own deprecation warning.
+
+    Internals read `self.recipe`; if one reverts to `self.xbudget_dict` the
+    library would warn at users who did nothing wrong.
+    """
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        wmt = xwmt.WaterMassTransformations(grid, FULL_BUDGET)
+        wmt.lambdas()
+        wmt.available_processes()
+    assert not [w for w in rec if "xbudget_dict" in str(w.message)]
+
+
+# -- budget metadata: absent key vs. present-but-None ------------------------
+
+
+def test_budget_metadata_presence_vs_none():
+    """The `_UNSET` sentinel must distinguish an absent key from a `None` value.
+
+    This is the entire reason the helper exists. `lambda: None` and
+    `thickness: None` are legitimate declarations that must resolve to `None`,
+    while an *absent* key must fall through -- to `surface_lambda`, or to
+    `h_name`'s default. Collapsing the two (e.g. a regression to `.get(key)`)
+    would silently reject the idealized/surface budgets.
+    """
+    read = xwmt.wmt.WaterMassTransformations._budget_metadata
+    UNSET = xwmt.wmt.WaterMassTransformations._UNSET
+    LAMBDAS = ("lambda", "surface_lambda")
+
+    # present-but-None resolves to None, not the sentinel
+    assert read({"heat": {"lambda": None}}, "heat", LAMBDAS) is None
+    assert read({"mass": {"thickness": None}}, "mass", ("thickness",)) is None
+    # absent resolves to the sentinel
+    assert read({"heat": {}}, "heat", LAMBDAS) is UNSET
+    assert read({"mass": {}}, "mass", ("thickness",)) is UNSET
+    # keys are tried in order: the first *present* one wins, even if it is None
+    assert (
+        read({"heat": {"lambda": None, "surface_lambda": "tos"}}, "heat", LAMBDAS)
+        is None
+    )
+    # ...and it falls through when the first key is absent
+    assert read({"heat": {"surface_lambda": "tos"}}, "heat", LAMBDAS) == "tos"
+
+
+def test_tracer_with_explicit_null_lambda_is_accepted(grid):
+    """`salt: {lambda: None}` (as the idealized/surface budgets declare) resolves."""
+    wmt = xwmt.WaterMassTransformations(grid, FULL_BUDGET)
+    assert wmt.tracer_dict["salt"] is None
+
+
+def test_surface_lambda_used_when_lambda_absent(grid):
+    budget = copy.deepcopy(FULL_BUDGET)
+    del budget["heat"]["lambda"]
+    budget["heat"]["surface_lambda"] = "temperature"
+    wmt = xwmt.WaterMassTransformations(grid, budget)
+    assert wmt.tracer_dict["heat"] == "temperature"
+
+
+def test_tracer_missing_both_lambda_keys_raises(grid):
+    budget = copy.deepcopy(FULL_BUDGET)
+    del budget["heat"]["lambda"]
+    with pytest.raises(ValueError, match="lambda"):
+        xwmt.WaterMassTransformations(grid, budget)
+
+
+def test_mass_thickness_sets_h_name(grid):
+    """The mass budget's `thickness` is what WaterMass builds its metrics from."""
+    wmt = xwmt.WaterMassTransformations(grid, FULL_BUDGET)
+    assert wmt.h_name == "dz"
 
 
 def _surface_grid():

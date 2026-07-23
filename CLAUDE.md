@@ -70,9 +70,11 @@ Three source modules under `xwmt/`, plus tests:
   the cell-center thickness metric is passed in via `h=` (callers pass `self.Z_metrics["center"]`).
 
 - **`wmt.py` — `WaterMassTransformations(WaterMass)`**: the main user-facing class. Adds the
-  transformation logic on top of `WaterMass`. Driven by an `xbudget_dict` (a nested dict from
+  transformation logic on top of `WaterMass`. Driven by a `recipe` (a nested dict from
   the `xbudget` package, e.g. its `MOM6.yaml` preset) that maps tracers → lambda variable names
-  and tendency "processes" → dataset variable names.
+  and tendency "processes" → dataset variable names. The constructor argument was called
+  `xbudget_dict` before xbudget 0.7.0 renamed the concept; that keyword (and the
+  `.xbudget_dict` attribute) still work but emit a `FutureWarning`.
 
 ### Key data flow in `wmt.py`
 
