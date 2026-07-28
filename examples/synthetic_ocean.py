@@ -69,10 +69,11 @@ def make_idealized_basin(nx=40, ny=40, nz=30):
         }
     )
 
-    # Geographic coordinates. xwmt needs `lat` to convert depth to pressure for
-    # the equation of state, and uses `lon` for the absolute-salinity conversion.
-    # Real model output usually carries these as 2D curvilinear fields, so give
-    # them the same shape here even though this grid is a plain lon/lat box.
+    # Geographic coordinates, used by xwmt for the practical-to-absolute salinity
+    # conversion that TEOS-10 needs. (Depth-to-pressure no longer needs them: it
+    # uses a constant gravity unless `gravity="gsw"` is requested.) Real model
+    # output usually carries these as 2D curvilinear fields, so give them the same
+    # shape here even though this grid is a plain lon/lat box.
     ds = ds.assign_coords(
         {
             "lon": (("yh", "xh"), np.broadcast_to(lon[np.newaxis, :], (ny, nx)).copy()),

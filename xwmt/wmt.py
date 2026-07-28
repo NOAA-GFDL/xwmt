@@ -101,6 +101,7 @@ class WaterMassTransformations(WaterMass):
         eos=_EOS_UNSET,
         cp=3992.0,
         rho_ref=1035.0,
+        gravity=9.81,
         t_var="conservative",
         s_var="absolute",
         method="default",
@@ -135,6 +136,10 @@ class WaterMassTransformations(WaterMass):
             Value of specific heat capacity.
         rho_ref : float (default: 1035.0, the MOM6 default value)
             Value of reference potential density. Note: WaterMass is assumed to be Boussinesq.
+        gravity : float or "gsw" (default: 9.81)
+            Constant gravitational acceleration [m s-2] used to convert depth to
+            pressure, or "gsw" for `gsw.p_from_z`'s latitude-dependent gravity
+            (which requires a `lat` coordinate). See `WaterMass` for details.
         t_var: str ("conservative", "potential", or "in-situ")
             Does variable `t_name` represent "conservative", "potential", or "in-situ" temperature?
         s_var: str ("absolute" or "practical")
@@ -198,6 +203,7 @@ class WaterMassTransformations(WaterMass):
             eos=eos,
             cp=cp,
             rho_ref=rho_ref,
+            gravity=gravity,
             t_var=t_var,
             s_var=s_var,
             teos10=teos10,
