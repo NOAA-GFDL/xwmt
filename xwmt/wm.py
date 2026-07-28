@@ -344,6 +344,19 @@ class WaterMass:
             density = self.eos.rho(temp, salt, p_density)
             if "sigma" in density_name:
                 density = density - 1000.0
+                # `rho` arrives carrying the EOS's in-situ density metadata, and
+                # those attributes survive the subtraction. A potential density
+                # anomaly is neither in situ nor an absolute density, and the stale
+                # `long_name` is not merely cosmetic: xhistogram copies attributes
+                # onto the target bin coordinate, so it reaches figure axis labels
+                # as "in-situ density" on an axis that plots sigma.
+                density.attrs = {
+                    "long_name": (
+                        "potential density anomaly "
+                        f"(referenced to {p_density:.0f} dbar)"
+                    ),
+                    "units": "kg m-3",
+                }
             self.grid._ds[density_name] = density.rename(density_name)
 
         return self.grid._ds[density_name]
