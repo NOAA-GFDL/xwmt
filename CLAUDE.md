@@ -94,11 +94,33 @@ The pipeline, from low to high level (each calls the one above it):
    xgcm without corrupting `self.method`). Handles "prebinned" data where lambda is already a
    vertical coordinate (skips re-binning unless `rebin=True`). Density components are named via
    the `_COMPONENTS`/`_component_name` helpers (the `"_heat"`/`"_salt"` suffix convention).
+   Finally, if `N_min` is set, `_mask_undersampled_bins` NaNs out bins sampled by too few
+   grid cells (see below).
 4. `transformations_from_hlamdot` — loops over process terms and merges results.
 5. `map_transformations` (column-wise, `integrate=False`) and `integrate_transformations`
    (horizontally integrated, `integrate=True`) — the two top-level entry points. Both optionally
    sum heat+salt components (`sum_components`) and group process terms into kinematic vs material
    transformation categories (`group_processes`, via `_sum_components`/`_group_processes`).
+
+### `N_min` masking of under-resolved bins
+
+`count_cells_per_bin` histograms the *lambda field itself* (unweighted) into the target bins,
+counting grid cells that are non-NaN, of nonzero thickness, and inside `mask`. `N_min` (settable
+on the constructor and overridable per call on `transform_hlamdot_term`,
+`transformations_from_hlamdot`, `map_transformations`, `integrate_transformations`) then NaNs out
+bins whose count is below it. Points to keep in mind when editing:
+
+- The count is **term-independent** by design, so the same bins are masked for every process and
+  masked bins stay masked through `_sum_terms`/`_group_processes` (NaN propagates through the sums).
+- The count is taken over `[*_horizontal_dims, _zc]` when `integrate=True` and over `[_zc]` alone
+  when `integrate=False`, so `N_min` means something very different in the two cases.
+- `_lambda_field` deliberately does *not* vertically expand a surface-only lambda: the expansion
+  zero-fills non-outcropping layers, which is harmless for the transformation (their weights are
+  zero) but would put those zeros in the census.
+- The target coordinate is always `f"{lam_var}_l_target"`, matching `_transform_one` for both the
+  prebinned and non-prebinned paths.
+- Default is `N_min=None`, i.e. no masking and byte-identical results — keep it that way, since
+  the functional golden-value tests assume it.
 
 `lambda_name` can be a tracer key (`"heat"`, `"salt"`), a density name (`"sigma0"`…`"sigma4"`),
 or any custom tracer in the budget dict. `term` is a process key; `available_processes()` lists
@@ -125,6 +147,9 @@ the ones actually present in the dataset.
 - `test_bugfixes.py` — fast unit/regression tests on a tiny synthetic grid (no data download)
   that pin previously-broken paths (input validation, constructor mask, prebinned method
   non-mutation, grid non-mutation).
+- `test_bin_masking.py` — fast unit tests (no data download) for `count_cells_per_bin` and
+  `N_min`, on tiny grids whose per-bin counts are known exactly. Covers both transformation
+  backends, the prebinned/surface-only/multi-tile lambda paths, and laziness.
 - Baltic test data is fetched by the `baltic_dataset_path` / `baltic_grid_and_budgets` session
   fixtures in `conftest.py` (HTTPS-first, checksum-pinned, skips cleanly when offline). `*.nc`
   is gitignored. The pinned `DATA_SHA256` must be updated if the dataset is intentionally changed.

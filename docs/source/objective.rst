@@ -13,3 +13,5 @@ Disclaimer
 ===========================
 `xwmt` does not employ any checks to ensure conservation of heat and salt. It is the user's responsibility to ensure that budgets for heat and salt are properly closed in the datasets. Improperly conserved fields will yield incorrect results.
 
+Nor does `xwmt` check that the transformation rate in a given :math:`\lambda` bin is adequately sampled. In the tails of the water mass distribution, a bin may be populated by only a handful of grid cells; the resulting rate is not a converged estimate of the transformation, but it plots as a perfectly respectable-looking curve and is a common source of confusion. The optional ``N_min`` argument masks bins sampled by fewer than a given number of grid cells, and ``WaterMassTransformations.count_cells_per_bin`` reports the counts so that a sensible threshold can be chosen; see the :doc:`Masking under-resolved bins <examples/masking_undersampled_bins>` example.
+
