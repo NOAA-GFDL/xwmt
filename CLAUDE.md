@@ -42,6 +42,31 @@ black xwmt
 Note: `pytest` requires network access on first run — `conftest.py` downloads
 `xwmb_test_data_Baltic_3d.20230830.nc` from the GFDL FTP server into the working directory.
 
+## Development workflow
+
+Every branch / PR is developed in its **own git worktree** with its **own conda environment**, so
+that unrelated lines of work never share a checkout or a set of installed dependencies (the
+package's pins move fast enough — `xgcm`, `xbudget`, `xeos` — that a shared env silently goes stale
+against whichever branch you last installed).
+
+```bash
+# <slug> is the branch name, e.g. add-output-attributes
+git fetch upstream
+git worktree add ../wt-xwmt-<slug> -b <slug> upstream/main
+conda env create -n xwmt-<slug> -f ../wt-xwmt-<slug>/ci/environment.yml
+conda run -n xwmt-<slug> pip install -e ../wt-xwmt-<slug>
+```
+
+Conventions:
+- Worktree path `../wt-xwmt-<slug>`, conda env `xwmt-<slug>`.
+- Run tests, lint, and `gh pr create` from inside the worktree, using that env.
+- Symlink an already-downloaded `xwmb_test_data_Baltic_3d.20230830.nc` into the worktree rather
+  than re-fetching it from GFDL.
+- Tear both down once the branch merges:
+  `git worktree remove ../wt-xwmt-<slug> && conda env remove -n xwmt-<slug>`.
+- `upstream` is `NOAA-GFDL/xwmt` (the PR target) and `origin` is the `hdrake/xwmt` fork; local
+  `main` / `upstream/main` refs go stale quickly, so always `git fetch upstream` before branching.
+
 ## Architecture
 
 Three source modules under `xwmt/`, plus tests:
