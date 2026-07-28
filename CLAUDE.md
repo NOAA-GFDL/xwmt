@@ -69,7 +69,7 @@ Conventions:
 
 ## Architecture
 
-Three source modules under `xwmt/`, plus tests:
+Source modules under `xwmt/`, plus tests:
 
 - **`wm.py` — `WaterMass`**: the base class. Wraps an `xgcm.Grid` and handles all the
   *grid/thermodynamic* machinery that is independent of tendencies:
@@ -88,6 +88,23 @@ Three source modules under `xwmt/`, plus tests:
   - `add_gridcoords()` and `_rebuild_grid()` (module-level) reconstruct an `xgcm.Grid` from an
     existing one, preserving coords/metrics/boundary (and optionally adding more). `_rebuild_grid`
     is the single source of truth for grid reconstruction, used by both `__init__` and `add_gridcoords`.
+
+- **`attrs.py`**: the single source of truth for the CF-style metadata attached to xwmt output
+  (issue #46). Pure functions returning attribute dicts; no xarray objects are built here.
+  - Every transformation rate is in **`"kg s-1"`** (`WMT_UNITS`), for both entry points — the
+    xbudget conventions multiply cell area into the tendencies, so `map_transformations` returns
+    totals *per grid cell*, not a flux density per m². The module docstring derives this.
+  - Units are UDUNITS-2 parseable (`"kg s-1"`, never `"kg/s"`), and `standard_name` is only set
+    where a real CF standard name exists — there is none for a WMT rate.
+  - Per-process prose stays out of xwmt: `long_name`s are generated mechanically from the term
+    key, and xbudget's own `provenance`/`xbudget_path`/`xbudget_op` are propagated verbatim.
+  - Two complementary guards: `set_default_attrs` never overwrites what an upstream package set
+    (`xeos` annotates `alpha`/`beta`/`rho`), while `strip_inherited_attrs` clears attributes that
+    leaked in through arithmetic from an *input* field (`_SAMPLING_ATTRS` always; `_IDENTITY_ATTRS`
+    unless the caller passes `identity=False`). Both are needed: "don't overwrite" alone would
+    preserve the leak that made `p` (dbar) report `units: "m"`, `standard_name: "cell_thickness"`.
+  - `netcdf_safe` flattens xbudget's mixed str/float `provenance` lists, which are otherwise not
+    netCDF-serializable.
 
 - **`compute.py`**: small functional helpers for converting interfacial fluxes (`Jlam`) or
   layer-integrated tendencies into `hlamdot` — the **vertically-extensive tracer tendency**
@@ -150,6 +167,10 @@ the ones actually present in the dataset.
 - `test_bugfixes.py` — fast unit/regression tests on a tiny synthetic grid (no data download)
   that pin previously-broken paths (input validation, constructor mask, prebinned method
   non-mutation, grid non-mutation).
+- `test_attrs.py` — pins the output metadata (issue #46): units, sign convention, `cell_methods`,
+  CF bin bounds, xbudget provenance passthrough, netCDF round-trip, and — just as important —
+  that no input attribute leaks into a derived field. Mostly synthetic (no download); two tests
+  use the Baltic fixture, since real MOM6 attributes are what leaked in the first place.
 - Baltic test data is fetched by the `baltic_dataset_path` / `baltic_grid_and_budgets` session
   fixtures in `conftest.py` (HTTPS-first, checksum-pinned, skips cleanly when offline). `*.nc`
   is gitignored. The pinned `DATA_SHA256` must be updated if the dataset is intentionally changed.
@@ -158,10 +179,15 @@ the ones actually present in the dataset.
 
 - Everything stays **lazy/dask-friendly**: computations use `xr.apply_ufunc(..., dask="parallelized")`
   and avoid forcing computation. Preserve laziness when editing.
-- Derived state (`p`, `sa`, `ct`, `alpha`, `beta`, density, `z`, `z_interface`, `{h}_i`) is
+- Derived state (`p`, `alpha`, `beta`, density, `z`, `z_interface`, `{h}_i`) is
   accumulated onto the WaterMass's **own deep copy** `self.grid._ds`; the caller's grid is never
   mutated. Many methods are idempotent via `if "<var>" not in self.grid._ds` guards. (A future
   major version may move this derived state off `grid._ds` entirely — see the review notes.)
+- Anything xwmt writes to `grid._ds` or returns to the user goes through `xwmt.attrs`, via
+  `WaterMass._describe_derived` for intermediate fields and via
+  `WaterMassTransformations._annotate_*` for output. Note `z`/`z_interface` are **heights**
+  (0 at the free surface, negative at depth, `positive: "up"`), which is the convention
+  `gsw.p_from_z` expects — not depths, despite the method name `_compute_depth_coordinates`.
 - `Z_metrics` (center/interface thickness) lives on the `WaterMass` **instance** as
   `self.Z_metrics`, not on the `xgcm.Grid`. Grid reconstruction goes through `_rebuild_grid`.
 - Use the coordinate-name properties (`self._zc`, `self._zi`, `self._xc`, `self._yc`,

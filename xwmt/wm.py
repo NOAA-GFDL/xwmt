@@ -4,6 +4,7 @@ import xgcm
 import gsw
 import warnings
 
+from xwmt import attrs as _attrs
 from xwmt.eos import resolve_eos, convert_ts
 
 # Sentinel for the `eos` default, so an explicitly-passed `eos` (even the string
@@ -128,6 +129,10 @@ class WaterMass:
             self.grid._ds["z_i"] = xr.DataArray([0, 1.0], dims=("z_i",))
             self.grid._ds[f"{self.h_name}"] = xr.DataArray([1], dims=("z_l",))
             self.grid._ds[f"{self.h_name}_i"] = xr.DataArray([0.5, 0.5], dims=("z_i",))
+            for name in (self.h_name, f"{self.h_name}_i"):
+                self.grid._ds[name].attrs.update(
+                    _attrs.synthetic_thickness_attrs(name.endswith("_i"))
+                )
             self.grid = _rebuild_grid(
                 self.grid,
                 extra_coords={"Z": {"center": "z_l", "outer": "z_i"}},
@@ -165,9 +170,13 @@ class WaterMass:
             self.grid._ds.time.attrs = (
                 time_attrs  # For some reason these are not preserved by default
             )
+        self._describe_derived(
+            f"{self.h_name}_i",
+            _attrs.thickness_interface_attrs(self.grid._ds.get(self.h_name)),
+        )
 
     def _compute_depth_coordinates(self):
-        """Compute layer-center depth `z` and interface depth `z_interface` from Z_metrics."""
+        """Compute layer-center height `z` and interface height `z_interface` from Z_metrics."""
         self.grid._ds["z"] = (-self.grid.cumsum(self.Z_metrics["outer"], "Z")).chunk(
             {self._zc: -1}
         )
@@ -177,6 +186,28 @@ class WaterMass:
             -self.grid.cumsum(self.Z_metrics["center"], "Z", to="outer"),
             0.0,
         ).chunk({self._zi: -1})
+        for name in ("z", "z_interface"):
+            self._describe_derived(name, _attrs.derived_field_attrs(name))
+
+    def _describe_derived(self, name, attrs, keep_identity=False):
+        """
+        Describe a field that xwmt derived onto its own copy of the dataset.
+
+        Fields built by arithmetic inherit the attributes of whichever input
+        happened to come first, which is how xwmt's pressure field `p` used to end
+        up labelled "Cell Thickness" in metres (GitHub issue #46). Those inherited
+        attributes are stripped before xwmt's own are applied.
+
+        `keep_identity=True` preserves `units`/`long_name`/`standard_name`, for the
+        fields an upstream package annotates deliberately -- `xeos` describes the
+        `alpha`, `beta` and density arrays it returns, and those descriptions win
+        over anything xwmt would assert.
+        """
+        if name not in self.grid._ds:
+            return
+        da = self.grid._ds[name]
+        _attrs.strip_inherited_attrs(da, identity=not keep_identity)
+        _attrs.set_default_attrs(da, attrs)
 
     @property
     def _xc(self):
@@ -289,6 +320,7 @@ class WaterMass:
                 0,
                 dask="parallelized",
             )
+            self._describe_derived("p", _attrs.derived_field_attrs("p"))
 
         # `p_ref` is the pressure at which alpha/beta are evaluated; `p_density` is
         # the pressure at which the density variable itself is evaluated. For "rho"
@@ -334,10 +366,18 @@ class WaterMass:
 
         # Thermal expansion coefficient alpha and haline contraction coefficient beta
         # at the reference pressure (unless supplied by the caller).
+        # Only fields xwmt computed here are re-described: a caller-supplied alpha,
+        # beta or density comes with whatever metadata its author intended, and it
+        # is not xwmt's to strip.
         if not self._user_alpha:
             self.grid._ds["alpha"] = self.eos.alpha(temp, salt, p_ref)
+            # `keep_identity`: the EOS backend describes what it returns better
+            # than xwmt could, so only the sampling attributes that rode in from
+            # the model's temperature and salinity diagnostics are cleared.
+            self._describe_derived("alpha", {}, keep_identity=True)
         if not self._user_beta:
             self.grid._ds["beta"] = self.eos.beta(temp, salt, p_ref)
+            self._describe_derived("beta", {}, keep_identity=True)
 
         # Density (kg/m^3): in-situ for "rho", potential-density anomaly for "sigmaX".
         if density_name not in self.grid._ds:
@@ -345,6 +385,14 @@ class WaterMass:
             if "sigma" in density_name:
                 density = density - 1000.0
             self.grid._ds[density_name] = density.rename(density_name)
+            # Subtracting 1000 drops the EOS backend's attributes, and they would
+            # describe an in-situ density rather than a potential density anomaly
+            # anyway, so xwmt owns the sigmaX metadata but defers on "rho".
+            self._describe_derived(
+                density_name,
+                _attrs.derived_field_attrs(density_name),
+                keep_identity=density_name == "rho",
+            )
 
         return self.grid._ds[density_name]
 
