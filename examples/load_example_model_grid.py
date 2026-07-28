@@ -53,6 +53,20 @@ def _verify(path, file_name):
         )
 
 
+def _display_path(path):
+    """`path` relative to the repository root, for printing.
+
+    These messages end up in committed notebook outputs and from there in the
+    rendered documentation, so they must not carry whoever-built-it's absolute
+    home directory. Falls back to the absolute path if the file somehow lives
+    outside the repository.
+    """
+    try:
+        return path.relative_to(DATA_DIR.parent)
+    except ValueError:
+        return path
+
+
 def download_MOM6_example_data(file_name):
     """Download `file_name` from Zenodo into `data/`, unless already present."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -60,7 +74,8 @@ def download_MOM6_example_data(file_name):
 
     if destination_path.exists():
         print(
-            f"File '{file_name}' already exists at {destination_path}. Skipping download."
+            f"File '{file_name}' already exists at {_display_path(destination_path)}. "
+            "Skipping download."
         )
         _verify(destination_path, file_name)
         return str(destination_path)
@@ -68,7 +83,7 @@ def download_MOM6_example_data(file_name):
     # Download to a temporary name so an interrupted transfer cannot leave a
     # truncated file behind that later runs would mistake for a complete one.
     tmp_path = destination_path.with_suffix(destination_path.suffix + ".part")
-    print(f"File '{file_name}' being downloaded to {destination_path}.")
+    print(f"File '{file_name}' being downloaded to {_display_path(destination_path)}.")
     try:
         with (
             urllib.request.urlopen(ZENODO_URL + file_name) as response,
@@ -83,7 +98,9 @@ def download_MOM6_example_data(file_name):
 
     _verify(tmp_path, file_name)
     tmp_path.rename(destination_path)
-    print(f"File '{file_name}' has completed download to {destination_path}.")
+    print(
+        f"File '{file_name}' has completed download to {_display_path(destination_path)}."
+    )
     return str(destination_path)
 
 
