@@ -30,6 +30,11 @@ TEMPERATURES = np.array(
 BINS = np.array([0.0, 1.0, 2.0, 3.0])
 EXPECTED_COUNTS = np.array([1, 3, 8])
 
+# Masked bins are filled with 0.0 by default, which makes them indistinguishable from
+# genuinely zero ones. Tests that need to pin exactly *which* bins were masked therefore
+# ask for a NaN fill, purely as an unambiguous marker.
+NAN_FILL = {"fill_value": np.nan}
+
 
 def _tendency_grid(zname="z", temperatures=TEMPERATURES):
     """
@@ -92,6 +97,52 @@ def _wmt(**kwargs):
     return xwmt.WaterMassTransformations(grid, recipe, cp=1.0, rho_ref=1.0, **kwargs)
 
 
+def _time_varying_grid():
+    """
+    A two-timestep grid in which bin [0, 1) is well sampled at the first time (3 cells)
+    and under-sampled at the second (1 cell), so that `N_min=2` masks it at one time only.
+    """
+    at_t0 = np.array(
+        [
+            [0.5, 0.5, 0.5],
+            [1.5, 1.5, 1.5],
+            [2.5, 2.5, 2.5],
+            [2.5, 2.5, 2.5],
+        ]
+    )
+    at_t1 = at_t0.copy()
+    at_t1[0, 1:] = 1.5  # two of the three bin-[0, 1) cells warm out of the bin
+    grid, recipe = _tendency_grid()
+
+    ds = grid._ds
+    temperature = xr.concat(
+        [
+            ds["temperature"].copy(data=at_t0[:, None, :]),
+            ds["temperature"].copy(data=at_t1[:, None, :]),
+        ],
+        dim="time",
+    ).assign_coords({"time": np.array([0.0, 1.0])})
+    ds = ds.assign(temperature=temperature.transpose("time", "z_l", "y", "x"))
+    ds = ds.assign(
+        heat_tendency=ds["heat_tendency"].broadcast_like(ds["temperature"]).copy()
+    )
+
+    return (
+        xgcm.Grid(
+            ds,
+            coords={
+                "X": {"center": "x"},
+                "Y": {"center": "y"},
+                "Z": {"center": "z_l", "outer": "z_i"},
+            },
+            metrics={("X", "Y"): ["rA"]},
+            padding="fill",
+            autoparse_metadata=False,
+        ),
+        recipe,
+    )
+
+
 def test_count_cells_per_bin_integrated():
     # The domain-wide census is just the histogram of lambda over all grid cells.
     wmt = _wmt()
@@ -142,7 +193,7 @@ def test_N_min_masks_undersampled_bins(method):
     wmt = _wmt(method=method)
     full = wmt.integrate_transformations("heat", bins=BINS, sum_components=False)
     masked = wmt.integrate_transformations(
-        "heat", bins=BINS, sum_components=False, N_min=2
+        "heat", bins=BINS, sum_components=False, N_min=2, **NAN_FILL
     )
 
     assert not np.any(np.isnan(full["tendency"].values))
@@ -177,14 +228,14 @@ def test_N_min_from_constructor_and_per_call_override():
     wmt = _wmt(N_min=2)
     assert wmt.N_min == 2
     from_constructor = wmt.integrate_transformations(
-        "heat", bins=BINS, sum_components=False
+        "heat", bins=BINS, sum_components=False, **NAN_FILL
     )
     assert np.array_equal(
         np.isnan(from_constructor["tendency"].values), EXPECTED_COUNTS < 2
     )
 
     override = wmt.integrate_transformations(
-        "heat", bins=BINS, sum_components=False, N_min=4
+        "heat", bins=BINS, sum_components=False, N_min=4, **NAN_FILL
     )
     assert np.array_equal(np.isnan(override["tendency"].values), EXPECTED_COUNTS < 4)
 
@@ -194,7 +245,7 @@ def test_N_min_masks_column_wise_transformations():
     # number of vertical levels rather than by the size of the domain.
     wmt = _wmt()
     masked = wmt.map_transformations(
-        "heat", bins=BINS, sum_components=False, N_min=2
+        "heat", bins=BINS, sum_components=False, N_min=2, **NAN_FILL
     ).transpose("temperature_l_target", "y", "x")
     expected_counts = np.array([[1, 0, 0], [1, 1, 1], [2, 3, 3]])
     assert np.array_equal(
@@ -207,7 +258,12 @@ def test_N_min_propagates_into_summed_and_grouped_terms():
     # quietly reappearing as a partial sum.
     wmt = _wmt()
     masked = wmt.integrate_transformations(
-        "heat", bins=BINS, sum_components=True, group_processes=True, N_min=2
+        "heat",
+        bins=BINS,
+        sum_components=True,
+        group_processes=True,
+        N_min=2,
+        **NAN_FILL,
     )
     assert np.array_equal(
         np.isnan(masked["kinematic_transformation"].values), EXPECTED_COUNTS < 2
@@ -228,33 +284,87 @@ def test_N_min_prebinned_lambda():
     assert np.array_equal(counts.values, np.array([3, 3, 3, 3]))
 
     masked = wmt.integrate_transformations(
-        "heat", bins=bins, sum_components=False, N_min=4
+        "heat", bins=bins, sum_components=False, N_min=4, **NAN_FILL
     )
     assert np.all(np.isnan(masked["tendency"].values))
     kept = wmt.integrate_transformations(
-        "heat", bins=bins, sum_components=False, N_min=3
+        "heat", bins=bins, sum_components=False, N_min=3, **NAN_FILL
     )
     assert not np.any(np.isnan(kept["tendency"].values))
 
 
-def test_fill_value_zero_instead_of_nan():
-    # The same bins are masked either way; only what is written into them changes.
+def test_default_fill_value_is_zero():
+    # Masked bins default to 0.0, not NaN: the result stays dense, and the same bins are
+    # masked either way -- only what is written into them changes.
     wmt = _wmt()
-    nan_filled = wmt.integrate_transformations(
+    assert wmt.fill_value == 0.0
+
+    full = wmt.integrate_transformations("heat", bins=BINS, sum_components=False)
+    zero_filled = wmt.integrate_transformations(
         "heat", bins=BINS, sum_components=False, N_min=2
     )
-    zero_filled = wmt.integrate_transformations(
-        "heat", bins=BINS, sum_components=False, N_min=2, fill_value=0.0
+    nan_filled = wmt.integrate_transformations(
+        "heat", bins=BINS, sum_components=False, N_min=2, **NAN_FILL
     )
     masked = EXPECTED_COUNTS < 2
 
-    assert np.array_equal(np.isnan(nan_filled["tendency"].values), masked)
+    # Every bin carries a nonzero rate before masking, so a zero is unambiguous evidence
+    # that the bin was masked rather than merely quiet.
+    assert np.all(np.abs(full["tendency"].values) > 0.0)
     assert not np.any(np.isnan(zero_filled["tendency"].values))
-    assert np.all(zero_filled["tendency"].values[masked] == 0.0)
+    assert np.array_equal(zero_filled["tendency"].values == 0.0, masked)
     # Retained bins are untouched by the choice of fill value.
     assert np.allclose(
         zero_filled["tendency"].values[~masked], nan_filled["tendency"].values[~masked]
     )
+
+
+def test_default_fill_value_keeps_empty_bins_at_zero():
+    # A bin no grid cell falls into held exactly 0.0 before `N_min` existed. The default
+    # fill preserves that, so switching masking on does not turn quiet bins into gaps.
+    wmt = _wmt()
+    wide_bins = np.array([-2.0, -1.0, 0.0, 1.0, 2.0, 3.0])  # first two bins are empty
+    counts = wmt.count_cells_per_bin("heat", bins=wide_bins)
+    assert np.array_equal(counts.values[:2], np.array([0, 0]))
+
+    unmasked = wmt.integrate_transformations(
+        "heat", bins=wide_bins, sum_components=False
+    )
+    masked = wmt.integrate_transformations(
+        "heat", bins=wide_bins, sum_components=False, N_min=2
+    )
+    assert np.all(unmasked["tendency"].values[:2] == 0.0)
+    assert np.all(masked["tendency"].values[:2] == 0.0)
+
+
+def test_default_fill_value_keeps_time_means_honest():
+    # The reason 0.0 beats NaN as the default: a bin that is well sampled at one time and
+    # under-sampled at another must contribute its full record to `.mean("time")`. With a
+    # NaN fill, xarray's skipna=True default would average over only the well-sampled
+    # times while still presenting itself as a full time mean.
+    grid, recipe = _time_varying_grid()
+    wmt = xwmt.WaterMassTransformations(grid, recipe, cp=1.0, rho_ref=1.0)
+
+    counts = wmt.count_cells_per_bin("heat", bins=BINS)
+    # Bin 0 holds 3 cells at the first time and only 1 at the second.
+    assert np.array_equal(counts.isel(time=0).values[0], 3)
+    assert np.array_equal(counts.isel(time=1).values[0], 1)
+
+    full = wmt.integrate_transformations("heat", bins=BINS, sum_components=False)
+    zero_filled = wmt.integrate_transformations(
+        "heat", bins=BINS, sum_components=False, N_min=2
+    )
+    nan_filled = wmt.integrate_transformations(
+        "heat", bins=BINS, sum_components=False, N_min=2, **NAN_FILL
+    )
+
+    at_t0 = full["tendency"].isel(time=0).values[0]
+    assert abs(at_t0) > 0.0
+    # Zero fill: the masked second time contributes 0, so the mean is halved -- honest.
+    assert np.isclose(zero_filled["tendency"].mean("time").values[0], at_t0 / 2.0)
+    # NaN fill: skipna silently drops the masked time, reporting the first time's value
+    # as though it were a two-time mean.
+    assert np.isclose(nan_filled["tendency"].mean("time").values[0], at_t0)
 
 
 def test_fill_value_from_constructor_and_per_call_override():
@@ -262,19 +372,21 @@ def test_fill_value_from_constructor_and_per_call_override():
     # explicitly-passed np.nan can be distinguished from the default, since nan != nan.
     grid, recipe = _tendency_grid()
     wmt = xwmt.WaterMassTransformations(
-        grid, recipe, cp=1.0, rho_ref=1.0, N_min=2, fill_value=0.0
+        grid, recipe, cp=1.0, rho_ref=1.0, N_min=2, fill_value=np.nan
     )
-    assert wmt.fill_value == 0.0
+    assert np.isnan(wmt.fill_value)
 
     from_constructor = wmt.integrate_transformations(
         "heat", bins=BINS, sum_components=False
     )
-    assert not np.any(np.isnan(from_constructor["tendency"].values))
+    assert np.array_equal(
+        np.isnan(from_constructor["tendency"].values), EXPECTED_COUNTS < 2
+    )
 
     override = wmt.integrate_transformations(
-        "heat", bins=BINS, sum_components=False, fill_value=np.nan
+        "heat", bins=BINS, sum_components=False, fill_value=0.0
     )
-    assert np.array_equal(np.isnan(override["tendency"].values), EXPECTED_COUNTS < 2)
+    assert not np.any(np.isnan(override["tendency"].values))
 
 
 def test_fill_value_is_inert_without_N_min():
@@ -282,22 +394,18 @@ def test_fill_value_is_inert_without_N_min():
     wmt = _wmt()
     default = wmt.integrate_transformations("heat", bins=BINS, sum_components=False)
     with_fill = wmt.integrate_transformations(
-        "heat", bins=BINS, sum_components=False, fill_value=0.0
+        "heat", bins=BINS, sum_components=False, **NAN_FILL
     )
     assert np.array_equal(default["tendency"].values, with_fill["tendency"].values)
+    assert not np.any(np.isnan(default["tendency"].values))
 
 
 def test_fill_value_propagates_into_summed_and_grouped_terms():
-    # Grouped sums are built from the already-filled components, so a zero fill leaves
-    # the grouped curves dense rather than NaN.
+    # Grouped sums are built from the already-filled components, so the default zero fill
+    # leaves the grouped curves dense rather than NaN.
     wmt = _wmt()
     filled = wmt.integrate_transformations(
-        "heat",
-        bins=BINS,
-        sum_components=True,
-        group_processes=True,
-        N_min=2,
-        fill_value=0.0,
+        "heat", bins=BINS, sum_components=True, group_processes=True, N_min=2
     )
     assert not np.any(np.isnan(filled["kinematic_transformation"].values))
     assert np.all(filled["kinematic_transformation"].values[EXPECTED_COUNTS < 2] == 0.0)
@@ -310,7 +418,7 @@ def test_fill_value_validation():
             xwmt.WaterMassTransformations(grid, recipe, fill_value=bad)
 
     wmt = xwmt.WaterMassTransformations(grid, recipe, cp=1.0, rho_ref=1.0)
-    assert np.isnan(wmt.fill_value)
+    assert wmt.fill_value == 0.0
     with pytest.raises(TypeError, match="fill_value"):
         wmt.integrate_transformations("heat", bins=BINS, N_min=2, fill_value="zero")
 
@@ -360,11 +468,11 @@ def test_N_min_surface_only_lambda():
     full = wmt.integrate_transformations("heat", bins=bins, sum_components=False)
     assert not np.any(np.isnan(full["surface_flux"].values))
     masked = wmt.integrate_transformations(
-        "heat", bins=bins, sum_components=False, N_min=3
+        "heat", bins=bins, sum_components=False, N_min=3, **NAN_FILL
     )
     assert np.all(np.isnan(masked["surface_flux"].values))
     kept = wmt.integrate_transformations(
-        "heat", bins=bins, sum_components=False, N_min=2
+        "heat", bins=bins, sum_components=False, N_min=2, **NAN_FILL
     )
     assert np.allclose(kept["surface_flux"].values, full["surface_flux"].values)
 
@@ -424,7 +532,7 @@ def test_N_min_stays_lazy():
         rho_ref=1.0,
     )
     masked = wmt.integrate_transformations(
-        "heat", bins=BINS, sum_components=False, N_min=2
+        "heat", bins=BINS, sum_components=False, N_min=2, **NAN_FILL
     )
     assert masked["tendency"].chunks is not None
     assert np.array_equal(

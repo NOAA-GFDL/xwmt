@@ -108,8 +108,8 @@ The pipeline, from low to high level (each calls the one above it):
 counting grid cells that are non-NaN, of nonzero thickness, and inside `mask`. `N_min` (settable
 on the constructor and overridable per call on `transform_hlamdot_term`,
 `transformations_from_hlamdot`, `map_transformations`, `integrate_transformations`) then
-overwrites bins whose count is below it with `fill_value` (`np.nan` by default, commonly `0.0`).
-Points to keep in mind when editing:
+overwrites bins whose count is below it with `fill_value` (`0.0` by default; `np.nan` opts into
+gaps). Points to keep in mind when editing:
 
 - The count is **term-independent** by design, so the same bins are masked for every process and
   masked bins stay masked through `_sum_terms`/`_group_processes` (NaN propagates through the sums).
@@ -120,8 +120,13 @@ Points to keep in mind when editing:
   zero) but would put those zeros in the census.
 - The target coordinate is always `f"{lam_var}_l_target"`, matching `_transform_one` for both the
   prebinned and non-prebinned paths.
+- `fill_value` defaults to `0.0`, **not** `np.nan`, and this is deliberate: results are almost
+  always reduced further (`.mean("time")`, spatial means over `map_transformations` output) and
+  xarray reductions skip NaN, so a NaN fill would silently average a partly-masked bin over only
+  the samples that survived masking while still looking like a full mean. `0.0` also preserves the
+  pre-existing value of empty bins. `test_default_fill_value_keeps_time_means_honest` pins this.
 - `fill_value` uses `None` as its per-call "inherit the instance value" sentinel rather than
-  defaulting to `np.nan` at the call sites, because `np.nan != np.nan` makes an explicitly-passed
+  defaulting to a literal at the call sites, because `np.nan != np.nan` makes an explicitly-passed
   `np.nan` indistinguishable from a default. `_validate_fill_value` therefore rejects `None`.
 - Default is `N_min=None`, i.e. no masking and byte-identical results — keep it that way, since
   the functional golden-value tests assume it.

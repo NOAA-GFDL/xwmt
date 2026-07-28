@@ -140,7 +140,7 @@ class WaterMassTransformations(WaterMass):
         method="default",
         rebin=False,
         N_min=None,
-        fill_value=np.nan,
+        fill_value=0.0,
         teos10=None,
         *,
         xbudget_dict=None,
@@ -192,14 +192,20 @@ class WaterMassTransformations(WaterMass):
             of which also accepts a per-call `N_min`. See `count_cells_per_bin` for the exact
             definition of the count (and note that it means something different for
             column-wise and horizontally-integrated calculations).
-        fill_value : scalar (default: np.nan)
-            Value written into the bins masked by `N_min`. `np.nan` (the default) marks them
-            as "not estimated", which is what you want for plotting and keeps them out of
-            `skipna=True` reductions. Pass `0.0` instead when a downstream consumer cannot
-            handle NaN, or to say "no transformation here" rather than "unknown" — note that
-            this also restores the exact `0.0` that empty bins carried before masking.
-            Inert unless `N_min` is set. Used as the default for `map_transformations` /
-            `integrate_transformations`, each of which also accepts a per-call `fill_value`.
+        fill_value : scalar (default: 0.0)
+            Value written into the bins masked by `N_min`. The default `0.0` attributes no
+            transformation to those bins, which keeps later reductions honest: a
+            `.mean("time")` (or a spatial mean over `map_transformations` output) then
+            averages over every sample. With `np.nan` the same reduction would silently
+            average over only the subset of times or columns where the bin happened to be
+            well sampled — `skipna=True` is the xarray default — while still presenting
+            itself as a full mean. `0.0` also preserves the pre-existing value of genuinely
+            empty bins, which already held exactly `0.0` before any masking.
+            Pass `np.nan` to instead mark masked bins as "not estimated", which is useful
+            for plotting (a visible gap rather than a line along zero) as long as you are
+            careful about what any subsequent reduction means. Inert unless `N_min` is set.
+            Used as the default for `map_transformations` / `integrate_transformations`,
+            each of which also accepts a per-call `fill_value`.
         teos10 : bool, optional
             Deprecated. Use `eos` instead. `teos10=True` selects `eos="teos10"`;
             `teos10=False` maps to `eos=None` (which requires alpha/beta/density to
@@ -843,7 +849,7 @@ class WaterMassTransformations(WaterMass):
             See `count_cells_per_bin`.
         fill_value : scalar (default: None)
             Value written into the masked bins. If None, fall back to the constructor-level
-            `fill_value` (itself `np.nan`). Inert unless `N_min` is set.
+            `fill_value` (itself `0.0`). Inert unless `N_min` is set.
 
         Returns
         -------
@@ -1028,7 +1034,7 @@ class WaterMassTransformations(WaterMass):
             See `count_cells_per_bin`.
         fill_value : scalar (default: None)
             Value written into the masked bins. If None, fall back to the constructor-level
-            `fill_value` (itself `np.nan`). Inert unless `N_min` is set.
+            `fill_value` (itself `0.0`). Inert unless `N_min` is set.
 
         Returns
         -------
@@ -1170,8 +1176,9 @@ class WaterMassTransformations(WaterMass):
             never usefully exceed the number of vertical levels — see `count_cells_per_bin`.
         fill_value : scalar (default: None)
             Value written into the masked bins. If None, fall back to the constructor-level
-            `fill_value` (itself `np.nan`). Pass `0.0` to leave masked columns as zeros
-            rather than gaps. Inert unless `N_min` is set.
+            `fill_value` (itself `0.0`). Pass `np.nan` to leave masked columns as gaps
+            instead — but note that a spatial mean over the result will then be taken over
+            only the unmasked columns. Inert unless `N_min` is set.
 
         Returns
         -------
@@ -1249,8 +1256,10 @@ class WaterMassTransformations(WaterMass):
             `count_cells_per_bin` to inspect the distribution of counts and choose a value.
         fill_value : scalar (default: None)
             Value written into the masked bins. If None, fall back to the constructor-level
-            `fill_value` (itself `np.nan`). Pass `0.0` to leave the masked tails as zeros
-            rather than gaps. Inert unless `N_min` is set.
+            `fill_value` (itself `0.0`). Pass `np.nan` to leave the masked tails as gaps
+            instead — but note that a `.mean("time")` over the result will then be taken
+            over only the times at which each bin was well sampled. Inert unless `N_min`
+            is set.
 
         Returns
         -------
