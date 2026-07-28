@@ -94,8 +94,8 @@ The pipeline, from low to high level (each calls the one above it):
    xgcm without corrupting `self.method`). Handles "prebinned" data where lambda is already a
    vertical coordinate (skips re-binning unless `rebin=True`). Density components are named via
    the `_COMPONENTS`/`_component_name` helpers (the `"_heat"`/`"_salt"` suffix convention).
-   Finally, if `N_min` is set, `_mask_undersampled_bins` NaNs out bins sampled by too few
-   grid cells (see below).
+   Finally, if `N_min` is set, `_mask_undersampled_bins` overwrites bins sampled by too few
+   grid cells with `fill_value` (see below).
 4. `transformations_from_hlamdot` — loops over process terms and merges results.
 5. `map_transformations` (column-wise, `integrate=False`) and `integrate_transformations`
    (horizontally integrated, `integrate=True`) — the two top-level entry points. Both optionally
@@ -107,8 +107,9 @@ The pipeline, from low to high level (each calls the one above it):
 `count_cells_per_bin` histograms the *lambda field itself* (unweighted) into the target bins,
 counting grid cells that are non-NaN, of nonzero thickness, and inside `mask`. `N_min` (settable
 on the constructor and overridable per call on `transform_hlamdot_term`,
-`transformations_from_hlamdot`, `map_transformations`, `integrate_transformations`) then NaNs out
-bins whose count is below it. Points to keep in mind when editing:
+`transformations_from_hlamdot`, `map_transformations`, `integrate_transformations`) then
+overwrites bins whose count is below it with `fill_value` (`np.nan` by default, commonly `0.0`).
+Points to keep in mind when editing:
 
 - The count is **term-independent** by design, so the same bins are masked for every process and
   masked bins stay masked through `_sum_terms`/`_group_processes` (NaN propagates through the sums).
@@ -119,6 +120,9 @@ bins whose count is below it. Points to keep in mind when editing:
   zero) but would put those zeros in the census.
 - The target coordinate is always `f"{lam_var}_l_target"`, matching `_transform_one` for both the
   prebinned and non-prebinned paths.
+- `fill_value` uses `None` as its per-call "inherit the instance value" sentinel rather than
+  defaulting to `np.nan` at the call sites, because `np.nan != np.nan` makes an explicitly-passed
+  `np.nan` indistinguishable from a default. `_validate_fill_value` therefore rejects `None`.
 - Default is `N_min=None`, i.e. no masking and byte-identical results — keep it that way, since
   the functional golden-value tests assume it.
 

@@ -237,6 +237,84 @@ def test_N_min_prebinned_lambda():
     assert not np.any(np.isnan(kept["tendency"].values))
 
 
+def test_fill_value_zero_instead_of_nan():
+    # The same bins are masked either way; only what is written into them changes.
+    wmt = _wmt()
+    nan_filled = wmt.integrate_transformations(
+        "heat", bins=BINS, sum_components=False, N_min=2
+    )
+    zero_filled = wmt.integrate_transformations(
+        "heat", bins=BINS, sum_components=False, N_min=2, fill_value=0.0
+    )
+    masked = EXPECTED_COUNTS < 2
+
+    assert np.array_equal(np.isnan(nan_filled["tendency"].values), masked)
+    assert not np.any(np.isnan(zero_filled["tendency"].values))
+    assert np.all(zero_filled["tendency"].values[masked] == 0.0)
+    # Retained bins are untouched by the choice of fill value.
+    assert np.allclose(
+        zero_filled["tendency"].values[~masked], nan_filled["tendency"].values[~masked]
+    )
+
+
+def test_fill_value_from_constructor_and_per_call_override():
+    # `None` at the call site means "inherit", not "no fill" -- which is the only way an
+    # explicitly-passed np.nan can be distinguished from the default, since nan != nan.
+    grid, recipe = _tendency_grid()
+    wmt = xwmt.WaterMassTransformations(
+        grid, recipe, cp=1.0, rho_ref=1.0, N_min=2, fill_value=0.0
+    )
+    assert wmt.fill_value == 0.0
+
+    from_constructor = wmt.integrate_transformations(
+        "heat", bins=BINS, sum_components=False
+    )
+    assert not np.any(np.isnan(from_constructor["tendency"].values))
+
+    override = wmt.integrate_transformations(
+        "heat", bins=BINS, sum_components=False, fill_value=np.nan
+    )
+    assert np.array_equal(np.isnan(override["tendency"].values), EXPECTED_COUNTS < 2)
+
+
+def test_fill_value_is_inert_without_N_min():
+    # Without `N_min` nothing is masked, so `fill_value` has nothing to write into.
+    wmt = _wmt()
+    default = wmt.integrate_transformations("heat", bins=BINS, sum_components=False)
+    with_fill = wmt.integrate_transformations(
+        "heat", bins=BINS, sum_components=False, fill_value=0.0
+    )
+    assert np.array_equal(default["tendency"].values, with_fill["tendency"].values)
+
+
+def test_fill_value_propagates_into_summed_and_grouped_terms():
+    # Grouped sums are built from the already-filled components, so a zero fill leaves
+    # the grouped curves dense rather than NaN.
+    wmt = _wmt()
+    filled = wmt.integrate_transformations(
+        "heat",
+        bins=BINS,
+        sum_components=True,
+        group_processes=True,
+        N_min=2,
+        fill_value=0.0,
+    )
+    assert not np.any(np.isnan(filled["kinematic_transformation"].values))
+    assert np.all(filled["kinematic_transformation"].values[EXPECTED_COUNTS < 2] == 0.0)
+
+
+def test_fill_value_validation():
+    grid, recipe = _tendency_grid()
+    for bad in ("nan", None, [0.0]):
+        with pytest.raises(TypeError, match="fill_value"):
+            xwmt.WaterMassTransformations(grid, recipe, fill_value=bad)
+
+    wmt = xwmt.WaterMassTransformations(grid, recipe, cp=1.0, rho_ref=1.0)
+    assert np.isnan(wmt.fill_value)
+    with pytest.raises(TypeError, match="fill_value"):
+        wmt.integrate_transformations("heat", bins=BINS, N_min=2, fill_value="zero")
+
+
 def _surface_grid(ny=4, nx=5):
     """A tiny 2D surface grid (no Z axis), as used for surface WMT."""
     ds = xr.Dataset()

@@ -109,6 +109,24 @@ class WaterMassTransformations(WaterMass):
             raise ValueError(f"`N_min` must be non-negative, got {N_min}.")
         return int(N_min)
 
+    @staticmethod
+    def _validate_fill_value(fill_value):
+        """Check that `fill_value` is a real scalar, and return it.
+
+        `None` is *not* accepted here: at the call sites it is the "inherit the
+        instance's `fill_value`" sentinel, which has to be resolved before this
+        is reached. A sentinel is needed because `np.nan != np.nan`, so an
+        explicitly-passed `np.nan` cannot otherwise be told apart from the default.
+        """
+        if isinstance(fill_value, bool) or not isinstance(
+            fill_value, (int, float, np.number)
+        ):
+            raise TypeError(
+                f"`fill_value` must be a real scalar (e.g. `np.nan` or `0.0`), "
+                f"got {type(fill_value).__name__}."
+            )
+        return fill_value
+
     def __init__(
         self,
         grid,
@@ -122,6 +140,7 @@ class WaterMassTransformations(WaterMass):
         method="default",
         rebin=False,
         N_min=None,
+        fill_value=np.nan,
         teos10=None,
         *,
         xbudget_dict=None,
@@ -173,6 +192,14 @@ class WaterMassTransformations(WaterMass):
             of which also accepts a per-call `N_min`. See `count_cells_per_bin` for the exact
             definition of the count (and note that it means something different for
             column-wise and horizontally-integrated calculations).
+        fill_value : scalar (default: np.nan)
+            Value written into the bins masked by `N_min`. `np.nan` (the default) marks them
+            as "not estimated", which is what you want for plotting and keeps them out of
+            `skipna=True` reductions. Pass `0.0` instead when a downstream consumer cannot
+            handle NaN, or to say "no transformation here" rather than "unknown" — note that
+            this also restores the exact `0.0` that empty bins carried before masking.
+            Inert unless `N_min` is set. Used as the default for `map_transformations` /
+            `integrate_transformations`, each of which also accepts a per-call `fill_value`.
         teos10 : bool, optional
             Deprecated. Use `eos` instead. `teos10=True` selects `eos="teos10"`;
             `teos10=False` maps to `eos=None` (which requires alpha/beta/density to
@@ -189,6 +216,7 @@ class WaterMassTransformations(WaterMass):
         self.mask = mask
         self.rebin = rebin
         self.N_min = self._validate_N_min(N_min)
+        self.fill_value = self._validate_fill_value(fill_value)
 
         # Read the budget metadata that maps tracers to their lambda coordinate
         # and the mass budget to its layer-thickness variable. These live at the
@@ -759,10 +787,11 @@ class WaterMassTransformations(WaterMass):
         )
 
     def _mask_undersampled_bins(
-        self, transformed, lambda_name, bin_bounds, mask, integrate, N_min
+        self, transformed, lambda_name, bin_bounds, mask, integrate, N_min, fill_value
     ):
         """
-        Mask (NaN out) bins of `transformed` sampled by fewer than `N_min` grid cells.
+        Overwrite bins of `transformed` sampled by fewer than `N_min` grid cells with
+        `fill_value`.
         """
         target_dim = self._target_dim(lambda_name)
         if target_dim not in transformed.sizes:
@@ -777,10 +806,17 @@ class WaterMassTransformations(WaterMass):
         # (or drop every bin) on a floating-point discrepancy between the two.
         if counts.sizes[target_dim] == transformed.sizes[target_dim]:
             counts = counts.assign_coords({target_dim: transformed[target_dim].values})
-        return transformed.where(counts >= N_min)
+        return transformed.where(counts >= N_min, fill_value)
 
     def transform_hlamdot_term(
-        self, lambda_name, term, bins=None, mask=None, integrate=True, N_min=None
+        self,
+        lambda_name,
+        term,
+        bins=None,
+        mask=None,
+        integrate=True,
+        N_min=None,
+        fill_value=None,
     ):
         """
         Lazily compute extensive tendencies and transform them into lambda space
@@ -805,6 +841,9 @@ class WaterMassTransformations(WaterMass):
             Mask bins sampled by fewer than `N_min` grid cells. If None, fall back to
             the constructor-level `N_min` (itself None by default, i.e. no masking).
             See `count_cells_per_bin`.
+        fill_value : scalar (default: None)
+            Value written into the masked bins. If None, fall back to the constructor-level
+            `fill_value` (itself `np.nan`). Inert unless `N_min` is set.
 
         Returns
         -------
@@ -896,11 +935,22 @@ class WaterMassTransformations(WaterMass):
                 output_name=f"{term}",
             )
 
-        # Fall back to the constructor-level N_min when no per-call value is given.
+        # Fall back to the constructor-level values when no per-call ones are given.
         N_min = self._validate_N_min(N_min) if N_min is not None else self.N_min
+        fill_value = (
+            self.fill_value
+            if fill_value is None
+            else self._validate_fill_value(fill_value)
+        )
         if N_min is not None:
             hlamdot_transformed = self._mask_undersampled_bins(
-                hlamdot_transformed, lambda_name, bin_bounds, mask, integrate, N_min
+                hlamdot_transformed,
+                lambda_name,
+                bin_bounds,
+                mask,
+                integrate,
+                N_min,
+                fill_value,
             )
         return hlamdot_transformed
 
@@ -943,7 +993,14 @@ class WaterMassTransformations(WaterMass):
         return (transformed / np.diff(bin_bounds)).rename(output_name)
 
     def transformations_from_hlamdot(
-        self, lambda_name, term=None, bins=None, mask=None, integrate=True, N_min=None
+        self,
+        lambda_name,
+        term=None,
+        bins=None,
+        mask=None,
+        integrate=True,
+        N_min=None,
+        fill_value=None,
     ):
         """
         Lazily compute extensive tendencies, transform them into lambda space
@@ -969,6 +1026,9 @@ class WaterMassTransformations(WaterMass):
             Mask bins sampled by fewer than `N_min` grid cells. If None, fall back to
             the constructor-level `N_min` (itself None by default, i.e. no masking).
             See `count_cells_per_bin`.
+        fill_value : scalar (default: None)
+            Value written into the masked bins. If None, fall back to the constructor-level
+            `fill_value` (itself `np.nan`). Inert unless `N_min` is set.
 
         Returns
         -------
@@ -999,6 +1059,7 @@ class WaterMassTransformations(WaterMass):
                 mask=mask,
                 integrate=integrate,
                 N_min=N_min,
+                fill_value=fill_value,
             )
             if transformed_hlamdot is not None:
                 wmts.append(-transformed_hlamdot)
@@ -1079,6 +1140,7 @@ class WaterMassTransformations(WaterMass):
         bins=None,
         mask=None,
         N_min=None,
+        fill_value=None,
     ):
         """
         Lazily compute column-wise water mass transformations.
@@ -1106,6 +1168,10 @@ class WaterMassTransformations(WaterMass):
             rates. If None, fall back to the constructor-level `N_min` (itself None by
             default, i.e. no masking). Since counting is column-wise here, `N_min` can
             never usefully exceed the number of vertical levels — see `count_cells_per_bin`.
+        fill_value : scalar (default: None)
+            Value written into the masked bins. If None, fall back to the constructor-level
+            `fill_value` (itself `np.nan`). Pass `0.0` to leave masked columns as zeros
+            rather than gaps. Inert unless `N_min` is set.
 
         Returns
         -------
@@ -1131,6 +1197,7 @@ class WaterMassTransformations(WaterMass):
             mask=mask,
             integrate=False,
             N_min=N_min,
+            fill_value=fill_value,
         )
 
         # process this function arguments
@@ -1152,6 +1219,7 @@ class WaterMassTransformations(WaterMass):
         bins=None,
         mask=None,
         N_min=None,
+        fill_value=None,
     ):
         """
         Lazily compute horizontally-integrated water mass transformations.
@@ -1179,6 +1247,10 @@ class WaterMassTransformations(WaterMass):
             mistaken for converged transformation rates. If None, fall back to the
             constructor-level `N_min` (itself None by default, i.e. no masking). Use
             `count_cells_per_bin` to inspect the distribution of counts and choose a value.
+        fill_value : scalar (default: None)
+            Value written into the masked bins. If None, fall back to the constructor-level
+            `fill_value` (itself `np.nan`). Pass `0.0` to leave the masked tails as zeros
+            rather than gaps. Inert unless `N_min` is set.
 
         Returns
         -------
@@ -1204,6 +1276,7 @@ class WaterMassTransformations(WaterMass):
             mask=mask,
             integrate=True,
             N_min=N_min,
+            fill_value=fill_value,
         )
 
         # process this function arguments
