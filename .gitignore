@@ -141,3 +141,6 @@ docs/jupyter_execute
 
 # Downloaded test datasets
 *.nc
+
+# Version file generated from the git tag by hatch-vcs at build time.
+xwmt/_version.py
