@@ -89,8 +89,8 @@ Source modules under `xwmt/`, plus tests:
     existing one, preserving coords/metrics/boundary (and optionally adding more). `_rebuild_grid`
     is the single source of truth for grid reconstruction, used by both `__init__` and `add_gridcoords`.
 
-- **`attrs.py`**: the single source of truth for the CF-style metadata attached to xwmt output
-  (issue #46). Pure functions returning attribute dicts; no xarray objects are built here.
+- **`attrs.py`**: the single source of truth for the CF-style metadata attached to xwmt output.
+  Pure functions returning attribute dicts; no xarray objects are built here.
   - Every transformation rate is in **`"kg s-1"`** (`WMT_UNITS`), for both entry points — the
     xbudget conventions multiply cell area into the tendencies, so `map_transformations` returns
     totals *per grid cell*, not a flux density per m². The module docstring derives this.
@@ -101,8 +101,8 @@ Source modules under `xwmt/`, plus tests:
   - Two complementary guards: `set_default_attrs` never overwrites what an upstream package set
     (`xeos` annotates `alpha`/`beta`/`rho`), while `strip_inherited_attrs` clears attributes that
     leaked in through arithmetic from an *input* field (`_SAMPLING_ATTRS` always; `_IDENTITY_ATTRS`
-    unless the caller passes `identity=False`). Both are needed: "don't overwrite" alone would
-    preserve the leak that made `p` (dbar) report `units: "m"`, `standard_name: "cell_thickness"`.
+    unless the caller passes `identity=False`). Both are needed: "don't overwrite" alone leaves
+    `p` (dbar) reporting `units: "m"`, `standard_name: "cell_thickness"` from its thickness input.
   - `netcdf_safe` flattens xbudget's mixed str/float `provenance` lists, which are otherwise not
     netCDF-serializable.
 
@@ -167,10 +167,10 @@ the ones actually present in the dataset.
 - `test_bugfixes.py` — fast unit/regression tests on a tiny synthetic grid (no data download)
   that pin previously-broken paths (input validation, constructor mask, prebinned method
   non-mutation, grid non-mutation).
-- `test_attrs.py` — pins the output metadata (issue #46): units, sign convention, `cell_methods`,
-  CF bin bounds, xbudget provenance passthrough, netCDF round-trip, and — just as important —
-  that no input attribute leaks into a derived field. Mostly synthetic (no download); two tests
-  use the Baltic fixture, since real MOM6 attributes are what leaked in the first place.
+- `test_attrs.py` — pins the output metadata: units, sign convention, `cell_methods`, CF bin
+  bounds, xbudget provenance passthrough, netCDF round-trip, and — just as important — that no
+  input attribute leaks into a derived field. Mostly synthetic (no download); two tests use the
+  Baltic fixture, since only real MOM6 output carries the attributes that can leak.
 - Baltic test data is fetched by the `baltic_dataset_path` / `baltic_grid_and_budgets` session
   fixtures in `conftest.py` (HTTPS-first, checksum-pinned, skips cleanly when offline). `*.nc`
   is gitignored. The pinned `DATA_SHA256` must be updated if the dataset is intentionally changed.

@@ -817,10 +817,11 @@ class WaterMassTransformations(WaterMass):
         component of the density-lambda path in `transform_hlamdot_term`. `method` is
         the concrete backend resolved by `_resolve_method`, never "default".
 
-        The result's attributes are cleared: depending on the backend and the xarray
-        version, some of the input tendency's attributes survive to here, and a
-        transformation rate labelled "W m-2" is worse than one labelled nothing at
-        all (GitHub issue #46). The correct attributes are set upstream.
+        The result's attributes are cleared: whether any of the input tendency's
+        attributes survive this far depends on the backend and the xarray version,
+        and a transformation rate labelled "W m-2" is worse than one labelled
+        nothing at all. The correct attributes are set upstream, in
+        `transformations_from_hlamdot`.
         """
         if method == "xhistogram":
             transformed = histogram(

@@ -1,10 +1,17 @@
 """CF-style metadata for the variables `xwmt` produces.
 
-The water mass transformation rates returned by
-:class:`~xwmt.wmt.WaterMassTransformations` used to come back either bare or --
-worse -- carrying the attributes of whichever input tendency they were derived
-from, so their `units` actively lied about the data (GitHub issue #46). This
-module is the single source of truth for the metadata attached to xwmt output.
+This module is the single source of truth for the attributes attached to xwmt
+output: the water mass transformation rates returned by
+:class:`~xwmt.wmt.WaterMassTransformations`, the lambda bin coordinate they are
+indexed by, and the intermediate fields :class:`~xwmt.wm.WaterMass` derives onto
+its own copy of the dataset.
+
+Every one of those is computed from model diagnostics, so none of them may keep
+the attributes of the fields it was computed from: a transformation rate in
+kg s-1 derived from a tendency in W m-2 must not describe itself as W m-2. The
+two guards for that are :func:`strip_inherited_attrs`, which clears what
+arithmetic dragged along, and :func:`set_default_attrs`, which fills in xwmt's
+own description without displacing anything an upstream package set deliberately.
 
 Conventions followed here:
 
@@ -82,7 +89,7 @@ _REFERENCES = (
 )
 
 _DISCLAIMER = (
-    "xwmt does not check conservation of heat and salt. It is the user's "
+    "xwmt does not check that mass or tracers are conserved. It is the user's "
     "responsibility to ensure that the input budgets are closed; improperly "
     "conserved fields yield incorrect transformation rates."
 )
@@ -115,10 +122,9 @@ _SAMPLING_ATTRS = ("cell_methods", "cell_measures", "time_avg_info")
 
 #: Attributes naming, dimensioning or orienting the quantity itself. A derived
 #: field is a *different* quantity from its inputs, so a value inherited through
-#: arithmetic is simply wrong. This is the failure mode reported in GitHub issue
-#: #46: xwmt's pressure field `p`, in dbar, arrives labelled `units: "m"` and
-#: `standard_name: "cell_thickness"` because it is computed from layer thickness,
-#: and `positive: "up"` because it is computed from a height.
+#: arithmetic is simply wrong. Left in place, the pressure field `p` would report
+#: `units: "m"` and `standard_name: "cell_thickness"` from the layer thickness it
+#: is computed from, and `positive: "up"` from the height.
 _IDENTITY_ATTRS = (
     "standard_name",
     "long_name",

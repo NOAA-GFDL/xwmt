@@ -194,9 +194,9 @@ class WaterMass:
         Describe a field that xwmt derived onto its own copy of the dataset.
 
         Fields built by arithmetic inherit the attributes of whichever input
-        happened to come first, which is how xwmt's pressure field `p` used to end
-        up labelled "Cell Thickness" in metres (GitHub issue #46). Those inherited
-        attributes are stripped before xwmt's own are applied.
+        xarray took them from -- left alone, the pressure field `p` reports the
+        layer thickness's "Cell Thickness" in metres. Those inherited attributes
+        are stripped before xwmt's own are applied.
 
         `keep_identity=True` preserves `units`/`long_name`/`standard_name`, for the
         fields an upstream package annotates deliberately -- `xeos` describes the

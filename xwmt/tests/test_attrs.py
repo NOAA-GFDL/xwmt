@@ -1,10 +1,11 @@
 """
-Tests for the CF-style metadata xwmt attaches to its output (GitHub issue #46).
+Tests for the CF-style metadata xwmt attaches to its output.
 
-The WMT rates used to come back either bare or -- worse -- carrying the units of
-whichever input tendency they were derived from, so a rate in kg s-1 could be
-labelled "W m-2". These tests pin both halves of the fix: that the correct
-attributes are present, and that none of the input's attributes survive.
+Two invariants, and both matter: the correct attributes are present, and none of
+the input diagnostics' attributes survive onto anything derived from them. The
+second is the easier one to lose silently -- xarray propagates attributes through
+arithmetic, so a rate in kg s-1 will happily describe itself as the "W m-2" of
+the tendency it came from unless something clears it.
 
 Everything here runs on the tiny synthetic grids from `test_bugfixes`, so no
 dataset download is needed.
@@ -59,7 +60,7 @@ def test_transformation_rates_are_in_kg_per_second(heat_transformations):
 
 
 def test_no_input_attributes_leak_into_output(heat_transformations):
-    """The core complaint of issue #46: wrong units inherited from the tendencies."""
+    """No output variable may describe itself with an input tendency's units."""
     _, transformations = heat_transformations
     for name, da in transformations.data_vars.items():
         if name.endswith("_bnds"):
@@ -155,7 +156,7 @@ def test_global_attributes_describe_the_calculation():
     assert integrated.attrs["xwmt_integrate"] == "true"
     assert mapped.attrs["xwmt_integrate"] == "false"
     # The conservation disclaimer travels with the data, not just the docs.
-    assert "conservation" in integrated.attrs["comment"]
+    assert "conserved" in integrated.attrs["comment"]
     assert "10.1029/2024MS004383" in integrated.attrs["references"]
 
 
@@ -207,12 +208,12 @@ def test_real_budget_output_is_clean_and_carries_xbudget_provenance(
     baltic_grid_and_budgets,
 ):
     """
-    End-to-end on real MOM6 output, where the leakage actually bit.
+    End-to-end on real MOM6 output, where the attributes to leak are real.
 
     The tendencies xbudget builds are in W and kg s-1 and carry MOM6's own
-    `units`/`cell_methods`, so this is the case issue #46 reported. It also pins
-    the other half of the fix: xbudget's `provenance` reaches the output, which is
-    what lets a user see that e.g. the "negative rhs" term is
+    `units`/`cell_methods`, none of which may reach the transformation rates. It
+    also pins the other direction: xbudget's `provenance` *does* reach the output,
+    which is what lets a user see that e.g. the "negative rhs" term is
     -1 x cp x tos x boundary_forcing_h_tendency x rho x area.
     """
     grid, budgets = baltic_grid_and_budgets
@@ -281,7 +282,7 @@ def water_mass():
 
 
 def test_pressure_does_not_inherit_thickness_metadata(water_mass):
-    """`p` is in dbar; it used to arrive labelled "Cell Thickness" in metres."""
+    """`p` is in dbar, derived from a thickness in metres via a height."""
     p = water_mass.grid._ds["p"]
     assert p.attrs["units"] == "dbar"
     assert p.attrs["standard_name"] == "sea_water_pressure"
