@@ -18,9 +18,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
+      with:
+        # hatch-vcs derives the version from the git tag, which a shallow clone
+        # does not have. Without this the build silently produces a
+        # `0.0.0.dev...` artifact instead of the release version.
+        fetch-depth: 0
     - name: Set up Python
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v5
       with:
         python-version: '3.x'
     - name: Install dependencies
@@ -29,6 +34,19 @@ jobs:
         pip install build
     - name: Build package
       run: python -m build
+    # Deriving the version from the tag should make this unfalsifiable, but it
+    # is the last point at which a mismatch is cheap to see: the alternative
+    # symptom is a 400 from PyPI at the very end of the release, and only when
+    # that version already exists.
+    - name: Built version must match the release tag
+      run: |
+        built=$(ls dist/*.tar.gz | sed -E 's|.*/xwmt-(.*)\.tar\.gz|\1|')
+        tag="${GITHUB_REF_NAME#v}"
+        echo "tag=$tag built=$built"
+        if [ "$built" != "$tag" ]; then
+          echo "::error::Release tag $GITHUB_REF_NAME implies version '$tag', but the build produced '$built'."
+          exit 1
+        fi
     - name: Publish package
       uses: pypa/gh-action-pypi-publish@27b31702a0e7fc50959f5ad993c78deac1bdfc29
       with:
