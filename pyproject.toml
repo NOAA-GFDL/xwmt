@@ -32,8 +32,8 @@ dependencies = [
     "pandas",
     "xarray",
     "xhistogram",
-    "xgcm >= 0.9.0",
-    "xbudget >= 0.6.0",
+    "xgcm >= 0.9.0, < 0.10",
+    "xbudget >= 0.6.0, < 0.7",
 ]
 
 [project.urls]
