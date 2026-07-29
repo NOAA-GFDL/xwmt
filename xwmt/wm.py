@@ -515,29 +515,93 @@ class WaterMass:
             0.0,
         )
 
-    def infer_bins(self, da, percentiles=[0.0, 1.0], nbins=100, surface=False):
+    def infer_bins(
+        self, da, percentiles=(0.0, 1.0), nbins=100, surface=False, spacing="linear"
+    ):
         """
-        Specify bins based on the distribution of `da`, excluding outliers.
+        Infer bin edges from the distribution of `da`.
+
+        The two arguments do separate jobs: `percentiles` fixes where the bins
+        *start and end*, and `spacing` fixes how the edges are distributed
+        *between* those endpoints.
 
         Parameters
         ----------
         da: xarray.DataArray
             Variable used to determine bins.
-        percentiles: list
-            List of length 2 containing the upper and lower percentiles to bound the array of bins.
-            Default: [0., 1.], i.e. min and max.
+        percentiles: sequence of float
+            Length-2 sequence giving the lower and upper quantiles that bound the
+            bins, as fractions in [0, 1] (not 0-100, despite the name, which is
+            kept for backwards compatibility). Default: (0., 1.), i.e. the min and
+            max of `da`. Use e.g. (0.01, 0.99) to keep outliers from stretching the
+            range. Note this only bounds the range; on its own it says nothing
+            about how the edges in between are spaced.
         nbins: int
-            Number of bins. Default: 100.
+            Number of bin edges, so `nbins - 1` bins. Default: 100.
         surface: bool
-            Default: False. If True, compute percentiles only from the outcropping layer of `da`.
+            Default: False. If True, infer bins only from the outcropping layer of `da`.
+        spacing: {"linear", "quantiles"}
+            How to distribute the edges across the range. Default: "linear",
+            equally spaced in the value of `da` -- bins of equal width, holding
+            unequal amounts of water. "quantiles" instead places the edges at the
+            quantiles `np.linspace(*percentiles, nbins)` of `da`, giving bins that
+            each hold roughly the same number of grid cells and so resolve
+            whichever range of lambda the water actually occupies. The two agree
+            when `da` is uniformly distributed.
+
+        Returns
+        -------
+        numpy.ndarray
+            `nbins` bin edges, increasing.
+
+        Notes
+        -----
+        Bin edges have to be concrete numbers, so this is one of the few places
+        that forces computation of a lazy `da`. Pass `bins=` explicitly to keep a
+        pipeline fully lazy.
         """
+        if spacing not in ("linear", "quantiles"):
+            raise ValueError(
+                f"`spacing` must be 'linear' or 'quantiles', got {spacing!r}."
+            )
+        if len(percentiles) != 2:
+            raise ValueError(
+                f"`percentiles` must have length 2, got {len(percentiles)}."
+            )
+        lower, upper = (float(p) for p in percentiles)
+        if not 0.0 <= lower < upper <= 1.0:
+            raise ValueError(
+                f"`percentiles` must be increasing fractions within [0, 1], got "
+                f"{tuple(percentiles)!r}."
+            )
+
         if surface:
             da = self.sel_outcrop_lev(da)
-        if percentiles != [0.0, 1.0]:
-            vmin, vmax = da.quantile(percentiles, dim=da.dims)
+
+        if spacing == "quantiles":
+            edges = da.quantile(np.linspace(lower, upper, nbins), dim=da.dims)
+            edges = np.asarray(edges, dtype=float)
+            # Quantiles of a field with plateaus (a masked basin, a well-mixed
+            # layer) can repeat, and a zero-width bin divides by zero downstream.
+            # Say so rather than returning silently degenerate bins.
+            if np.any(np.diff(edges) == 0.0):
+                warnings.warn(
+                    f"`spacing='quantiles'` produced repeated bin edges for "
+                    f"'{da.name}': its distribution is too concentrated to split "
+                    f"into {nbins - 1} equally populated bins. The resulting "
+                    f"zero-width bins will give infinite or undefined "
+                    f"transformation rates; use fewer bins or spacing='linear'."
+                )
+            return edges
+
+        if (lower, upper) != (0.0, 1.0):
+            vmin, vmax = da.quantile([lower, upper], dim=da.dims)
         else:
             vmin, vmax = da.min(), da.max()
-        return np.linspace(vmin, vmax, nbins)
+        # `float()` both computes a lazy result and, crucially, hands numpy plain
+        # scalars: `np.linspace` on 0-d DataArrays tries to wrap its 1-D output
+        # back into a 0-d DataArray and raises.
+        return np.linspace(float(vmin), float(vmax), nbins)
 
 
 def _rebuild_grid(grid, extra_coords=None, extra_padding=None, deep=False):
