@@ -322,6 +322,82 @@ def test_method_not_mutated_by_prebinned_transform():
     assert wmt.method == "xhistogram"
 
 
+def _ranged_tracer_grid():
+    """A single column whose tracer spans a real range, so bins are meaningful."""
+    nz = 8
+    ds = xr.Dataset()
+    ds = ds.assign_coords(
+        {
+            "z_i": xr.DataArray(np.linspace(0.0, 1.0, nz + 1), dims=("z_i",)),
+            "z_l": xr.DataArray(
+                0.5
+                * (
+                    np.linspace(0.0, 1.0, nz + 1)[:-1]
+                    + np.linspace(0.0, 1.0, nz + 1)[1:]
+                ),
+                dims=("z_l",),
+            ),
+        }
+    )
+    ds["dz"] = xr.DataArray(np.full((nz,), 1.0 / nz), dims=("z_l",))
+    ds["temperature"] = xr.DataArray(np.linspace(0.0, 10.0, nz), dims=("z_l",))
+    ds["so"] = xr.DataArray(np.full((nz,), 35.0), dims=("z_l",))
+    ds = ds.expand_dims(dim=("x", "y")).assign_coords(
+        {"x": xr.DataArray([1.0], dims=("x",)), "y": xr.DataArray([1.0], dims=("y",))}
+    )
+    ds = ds.assign_coords(
+        {
+            "rA": xr.DataArray([[1.0]], dims=("x", "y")),
+            "lat": xr.DataArray([[1.0]], dims=("x", "y")),
+        }
+    )
+    grid = xgcm.Grid(
+        ds,
+        coords={
+            "X": {"center": "x"},
+            "Y": {"center": "y"},
+            "Z": {"center": "z_l", "outer": "z_i"},
+        },
+        metrics={("X", "Y"): ["rA"]},
+        padding="fill",
+        autoparse_metadata=False,
+    )
+    return grid
+
+
+def test_infer_bins_accepts_dataarray():
+    # `infer_bins` took the min/max of `da` as 0-d DataArrays and handed them to
+    # `np.linspace`, which rejects them -- so the documented input (a DataArray)
+    # always raised and only `da.values` worked.
+    wm = xwmt.WaterMass(_ranged_tracer_grid(), t_name="temperature", h_name="dz")
+    bins = wm.infer_bins(wm.grid._ds.temperature, nbins=11)
+    assert bins.shape == (11,)
+    assert np.isclose(bins[0], 0.0) and np.isclose(bins[-1], 10.0)
+
+
+def test_infer_bins_percentiles_is_reachable():
+    # The `percentiles` branch was unreachable on every input: a DataArray hit the
+    # `np.linspace` bug above, and an ndarray has no `.quantile`.
+    wm = xwmt.WaterMass(_ranged_tracer_grid(), t_name="temperature", h_name="dz")
+    bins = wm.infer_bins(wm.grid._ds.temperature, percentiles=[0.25, 0.75], nbins=5)
+    assert bins.shape == (5,)
+    # Clipped to the interquartile range, so strictly inside the full 0-10 span.
+    assert bins[0] > 0.0 and bins[-1] < 10.0
+
+
+def test_integrate_transformations_default_bins():
+    # `bins=None` is the documented default of both top-level entry points, and it
+    # routes through `infer_bins` -- so the 0-d DataArray bug above meant the default
+    # call signature raised for every user. Pin the default path itself, not just the
+    # helper.
+    grid, budget, _ = _heat_tendency_grid()
+    wmt = xwmt.WaterMassTransformations(grid, budget, cp=1.0, rho_ref=1.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        transformations = wmt.integrate_transformations("heat", sum_components=False)
+    assert "tendency" in transformations
+
+
 def _multitile_heat_grid(nz=6, ny=3, nx=4):
     """A 2-tile (LLC-like) grid carrying a heat tendency and `face_connections`,
     together with the matching pair of single-tile grids, for the issue-#59
@@ -441,3 +517,154 @@ def test_multitile_broadcast_equivalence(method):
         rtol=1e-10,
         atol=1e-12,
     )
+
+
+def _grid_with_temp_salt(with_lat):
+    """`minimal_grid`, optionally stripped of the `lat`/`lon` coordinates.
+
+    `minimal_grid` carries `lat`, so the no-latitude cases have to drop it.
+    """
+    grid = minimal_grid()
+    if with_lat:
+        ds = grid._ds.assign_coords({"lon": xr.DataArray([[-30.0]], dims=("x", "y"))})
+    else:
+        ds = grid._ds.drop_vars([c for c in ("lat", "lon") if c in grid._ds.coords])
+    return xgcm.Grid(
+        ds,
+        coords={
+            "X": {"center": "x"},
+            "Y": {"center": "y"},
+            "Z": {"center": "z_l", "outer": "z_i"},
+        },
+        metrics={("X", "Y"): ["rA"]},
+        padding="fill",
+        autoparse_metadata=False,
+    )
+
+
+def test_constant_gravity_is_the_default_and_needs_no_lat():
+    # A constant gravity makes depth->pressure independent of latitude, so a
+    # dataset without `lat` must now work for an EOS that needs no salinity
+    # conversion. Previously every EOS path went through `gsw.p_from_z(z, lat)`
+    # and raised AttributeError here.
+    grid = _grid_with_temp_salt(with_lat=False)
+    wm = xwmt.WaterMass(
+        grid,
+        t_name="temperature",
+        s_name="so",
+        h_name="dz",
+        eos="wright97-full",
+        t_var="potential",
+        s_var="practical",
+    )
+    assert wm.gravity == 9.81
+    sigma0 = wm.get_density("sigma0")
+    assert np.all(np.isfinite(sigma0.values))
+
+    # p = rho_ref * g * depth, in dbar (1 dbar = 1e4 Pa).
+    depth = -wm.grid._ds.z
+    expected = wm.rho_ref * wm.gravity * depth * 1e-4
+    assert np.allclose(wm.grid._ds.p.values, expected.values)
+
+
+def test_gravity_gsw_matches_gsw_p_from_z():
+    # The opt-in "gsw" path must reproduce gsw.p_from_z exactly.
+    gsw = pytest.importorskip("gsw")
+    grid = _grid_with_temp_salt(with_lat=True)
+    wm = xwmt.WaterMass(
+        grid,
+        t_name="temperature",
+        s_name="so",
+        h_name="dz",
+        eos="wright97-full",
+        t_var="potential",
+        s_var="practical",
+        gravity="gsw",
+    )
+    wm.get_density("sigma0")
+    expected = gsw.p_from_z(wm.grid._ds.z.values, wm.grid._ds.lat.values, 0, 0)
+    assert np.allclose(wm.grid._ds.p.values, expected)
+
+
+def test_gravity_gsw_without_lat_raises_a_useful_error():
+    # The bare `AttributeError: 'Dataset' object has no attribute 'lat'` was
+    # opaque; asking for the latitude-dependent gravity without a latitude should
+    # say so, and say what to do instead.
+    grid = _grid_with_temp_salt(with_lat=False)
+    wm = xwmt.WaterMass(
+        grid,
+        t_name="temperature",
+        s_name="so",
+        h_name="dz",
+        eos="wright97-full",
+        t_var="potential",
+        s_var="practical",
+        gravity="gsw",
+    )
+    with pytest.raises(ValueError, match="lat"):
+        wm.get_density("sigma0")
+
+
+@pytest.mark.parametrize("bad", ["earth", 0.0, -9.81, None])
+def test_invalid_gravity_rejected(bad):
+    grid = _grid_with_temp_salt(with_lat=False)
+    with pytest.raises(ValueError, match="gravity"):
+        xwmt.WaterMass(
+            grid, t_name="temperature", s_name="so", h_name="dz", gravity=bad
+        )
+
+
+def test_practical_to_absolute_without_lonlat_raises_a_useful_error():
+    # Now that depth->pressure no longer needs a latitude, the practical->absolute
+    # salinity conversion is the only thing that does -- and it failed with a
+    # dtype-inference ValueError raised from inside `apply_ufunc`, naming neither
+    # `lon` nor `lat`. It should name both, and say how to avoid needing them.
+    grid = _grid_with_temp_salt(with_lat=False)
+    wm = xwmt.WaterMass(
+        grid,
+        t_name="temperature",
+        s_name="so",
+        h_name="dz",
+        eos="teos10",
+        t_var="potential",
+        s_var="practical",
+    )
+    with pytest.raises(ValueError) as excinfo:
+        wm.get_density("sigma0")
+    message = str(excinfo.value)
+    assert "`lon` and `lat`" in message
+    # It should point at the way out that needs no coordinates at all.
+    assert "wright97-full" in message
+
+
+def test_absolute_to_practical_without_lonlat_raises_a_useful_error():
+    # The mirror-image conversion (absolute salinity in, an EOS that wants
+    # practical salinity) goes through gsw.SP_from_SA and needs lon/lat just the same.
+    grid = _grid_with_temp_salt(with_lat=False)
+    wm = xwmt.WaterMass(
+        grid,
+        t_name="temperature",
+        s_name="so",
+        h_name="dz",
+        eos="wright97-full",
+        t_var="conservative",
+        s_var="absolute",
+    )
+    with pytest.raises(ValueError, match="absolute to practical"):
+        wm.get_density("sigma0")
+
+
+def test_lonlat_not_required_when_no_salinity_conversion_happens():
+    # The check must not fire when nothing asks for it: practical salinity into an
+    # EOS that takes practical salinity needs no geographic position at all.
+    grid = _grid_with_temp_salt(with_lat=False)
+    wm = xwmt.WaterMass(
+        grid,
+        t_name="temperature",
+        s_name="so",
+        h_name="dz",
+        eos="wright97-full",
+        t_var="potential",
+        s_var="practical",
+    )
+    assert np.all(np.isfinite(wm.get_density("sigma0").values))
