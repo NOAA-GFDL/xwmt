@@ -33,7 +33,7 @@ What each one is for
      - none
      - no
    * - :doc:`Closed transformation budgets <examples/closed_transformation_budget>`
-     - Closed, comprehensive MOM6 budgets and the ``xbudget`` dictionary
+     - Closed, comprehensive MOM6 budgets and the ``xbudget`` recipe
      - 1.08 GB
      - first run
    * - :doc:`North Atlantic Deep Water <examples/north_atlantic_deep_water>`

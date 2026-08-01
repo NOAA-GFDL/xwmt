@@ -111,17 +111,17 @@ class WaterMassTransformations(WaterMass):
         xbudget_dict=None,
     ):
         """
-        Create a new WaterMassTransformation object from an input xgcm.Grid and xbudget dictionary.
+        Create a new WaterMassTransformation object from an input xgcm.Grid and xbudget recipe.
 
         Parameters
         ----------
         grid : xgcm.Grid
             Contains information about ocean model grid coordinates, metrics, and data variables.
         recipe : dict
-            Nested dictionary containing information about lambda and tendency variable names.
+            Nested recipe containing information about lambda and tendency variable names.
             See the `xbudget` package documentation (https://github.com/hdrake/xbudget) for how
-            this dictionary should be structured. In particular, the `xbudget/recipes`
-            directory contains example `.yaml` files that can be read in as preset dictionaries.
+            this recipe should be structured. In particular, the `xbudget/recipes`
+            directory contains example `.yaml` files that can be read in as preset recipes.
             The `MOM6.yaml` file provides a comprehensive description of the mass, heat, and salt
             budgets in MOM6 (github.com/hdrake/xbudget/blob/main/xbudget/recipes/MOM6.yaml).
         mask : xr.DataArray (default: None)
@@ -150,9 +150,31 @@ class WaterMassTransformations(WaterMass):
             If "default", use "xhistogram" for area-integrated calculations (`integrate=True`)
             or "xgcm" for column-wise calculations (`integrate=False`) for efficiency.
             The other options force the use of a specific method, perhaps at the cost of efficiency.
+            Note that `method` is ignored on the prebinned path described under `rebin`,
+            which always uses "xgcm". That resolution is per call: it does not mutate
+            this attribute, so a later call with a non-prebinned lambda still uses the
+            method you asked for.
         rebin : bool (default: False)
             Set to True to force a transformation into the target coordinates, even if these
             coordinates already exist in the `grid` data structure.
+
+            When the requested lambda is *already* a coordinate of the grid's `Z` axis
+            -- both `{lambda}_l` and `{lambda}_i` are present, as in an isopycnal-coordinate
+            model whose vertical coordinate is sigma2 -- the data are already binned in
+            lambda before xwmt sees them. xwmt detects this "prebinned" case and uses the
+            model's own `{lambda}_l` as the lambda field, rather than recomputing it from
+            temperature and salinity through the equation of state.
+
+            `rebin=True` overrides that detection and recomputes regardless. Prefer the
+            default when the model's vertical coordinate already is your target lambda:
+            a layer's density is then a property of the coordinate and is known exactly,
+            whereas recomputing it from layer-mean temperature and salinity is lossy --
+            the equation of state is nonlinear, so the density of the mean T and S is not
+            the mean of the density. `rebin=True` is for target coordinates the grid does
+            not already provide.
+
+            Unlike `mask`, `rebin` is a constructor argument only; it cannot be varied
+            per call.
         teos10 : bool, optional
             Deprecated. Use `eos` instead. `teos10=True` selects `eos="teos10"`;
             `teos10=False` maps to `eos=None` (which requires alpha/beta/density to

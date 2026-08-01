@@ -147,7 +147,7 @@ class Helpers:
             ds, coords=coords, metrics=metrics, padding="fill", autoparse_metadata=False
         )
 
-        budget_dict = {
+        recipe = {
             "mass": {"lambda": None, "thickness": "dz", "rhs": {}, "lhs": {}},
             "heat": {
                 "lambda": "temperature",
@@ -158,7 +158,7 @@ class Helpers:
         }
 
         wmt = xwmt.WaterMassTransformations(
-            grid, budget_dict, cp=1.0, rho_ref=1.0, method="xgcm"
+            grid, recipe, cp=1.0, rho_ref=1.0, method="xgcm"
         )
         T = wmt.integrate_transformations("heat", bins=bins, sum_components=False)
         T = T.assign_coords(

@@ -526,9 +526,7 @@ def _grid_with_temp_salt(with_lat):
     """
     grid = minimal_grid()
     if with_lat:
-        ds = grid._ds.assign_coords(
-            {"lon": xr.DataArray([[-30.0]], dims=("x", "y"))}
-        )
+        ds = grid._ds.assign_coords({"lon": xr.DataArray([[-30.0]], dims=("x", "y"))})
     else:
         ds = grid._ds.drop_vars([c for c in ("lat", "lon") if c in grid._ds.coords])
     return xgcm.Grid(
