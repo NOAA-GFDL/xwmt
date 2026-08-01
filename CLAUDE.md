@@ -175,6 +175,31 @@ the ones actually present in the dataset.
   fixtures in `conftest.py` (HTTPS-first, checksum-pinned, skips cleanly when offline). `*.nc`
   is gitignored. The pinned `DATA_SHA256` must be updated if the dataset is intentionally changed.
 
+## Versioning
+
+**The git tag is the single source of truth.** `hatch-vcs`
+(`[tool.hatch.version] source = "vcs"`) derives the version from the tag at build time
+and writes it to `xwmt/_version.py`, which is **gitignored** — there is no version
+string in the source tree. `xwmt/version.py` is a thin shim that imports from it, with
+a `0.0.0+unknown` fallback for an un-built checkout.
+
+Consequences worth remembering when editing:
+
+- **Never add a version literal back to the tree**, and never "fix" a `0.0.0+unknown`
+  by hardcoding one — it means the package was imported without being built or installed.
+- **Any CI job that installs the package needs `fetch-depth: 0`.** A shallow clone cannot
+  see the tag, so hatch-vcs silently resolves a `0.1.devN` version instead of failing. The
+  `build` checkout in `ci.yml` and the one in `python-publish.yml` set it, and
+  `.readthedocs.yaml` unshallows in `post_checkout` for the same reason. The same applies
+  to a `pip install git+https://…` of a fork with no tags.
+- `_version.py` **is** shipped inside the sdist, so building from the sdist (as
+  conda-forge does) works with no git present. Do not add it to
+  `[tool.hatch.build] exclude`.
+- The conda-forge feedstock builds with `--no-build-isolation`, so its `host`
+  requirements must list `hatch-vcs` next to `hatchling`.
+- Releasing is just publishing a GitHub Release tagged `vX.Y.Z`; there is no bump commit.
+  See "Releasing" in `README.md`.
+
 ## Conventions
 
 - Everything stays **lazy/dask-friendly**: computations use `xr.apply_ufunc(..., dask="parallelized")`
