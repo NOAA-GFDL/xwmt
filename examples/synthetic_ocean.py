@@ -8,8 +8,8 @@ thing: the subtropics are warm, salty and heated; the subpolar gyre is cold,
 fresh and strongly cooled; and that cooling transforms light water into dense
 water.
 
-Nothing here is xwmt-specific machinery -- it is just an `xgcm.Grid` and a budget
-dictionary, exactly what you would build for your own model.
+Nothing here is xwmt-specific machinery -- it is just an `xgcm.Grid` and an
+xbudget recipe, exactly what you would build for your own model.
 """
 
 import numpy as np
@@ -40,9 +40,9 @@ def make_idealized_basin(nx=40, ny=40, nz=30):
     -------
     grid : xgcm.Grid
         A grid whose `_ds` holds the tracer fields and tendency diagnostics.
-    budget_dict : dict
-        A hand-written xbudget-style dictionary describing the heat and salt
-        budgets, ready to pass to `xwmt.WaterMassTransformations`.
+    recipe : dict
+        A hand-written xbudget recipe describing the heat and salt budgets,
+        ready to pass to `xwmt.WaterMassTransformations`.
     """
     # -- Geometry: a lon/lat box from 60W-0 and 20N-70N, 4000 m deep. ----------
     lon_i = np.linspace(-60.0, 0.0, nx + 1)
@@ -69,10 +69,11 @@ def make_idealized_basin(nx=40, ny=40, nz=30):
         }
     )
 
-    # Geographic coordinates. xwmt needs `lat` to convert depth to pressure for
-    # the equation of state, and uses `lon` for the absolute-salinity conversion.
-    # Real model output usually carries these as 2D curvilinear fields, so give
-    # them the same shape here even though this grid is a plain lon/lat box.
+    # Geographic coordinates, used by xwmt for the practical-to-absolute salinity
+    # conversion that TEOS-10 needs. (Depth-to-pressure no longer needs them: it
+    # uses a constant gravity unless `gravity="gsw"` is requested.) Real model
+    # output usually carries these as 2D curvilinear fields, so give them the same
+    # shape here even though this grid is a plain lon/lat box.
     ds = ds.assign_coords(
         {
             "lon": (("yh", "xh"), np.broadcast_to(lon[np.newaxis, :], (ny, nx)).copy()),
@@ -156,10 +157,10 @@ def make_idealized_basin(nx=40, ny=40, nz=30):
         autoparse_metadata=False,
     )
 
-    # The budget dictionary: which variable is lambda, and which variables hold
-    # the tendency processes acting on it. `xbudget` builds this for MOM6, but it
-    # is only a dict -- for a small case you can write it out by hand.
-    budget_dict = {
+    # The xbudget recipe: which variable is lambda, and which variables hold the
+    # tendency processes acting on it. `xbudget` builds this for MOM6, but it is
+    # only a dict -- for a small case you can write it out by hand.
+    recipe = {
         "mass": {"thickness": "thkcello"},
         "heat": {
             "lambda": "thetao",
@@ -174,4 +175,4 @@ def make_idealized_basin(nx=40, ny=40, nz=30):
         },
     }
 
-    return grid, budget_dict
+    return grid, recipe

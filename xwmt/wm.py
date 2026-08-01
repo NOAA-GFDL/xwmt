@@ -26,6 +26,7 @@ class WaterMass:
         eos=_EOS_UNSET,
         cp=3992.0,
         rho_ref=1035.0,
+        gravity=9.81,
         t_var="conservative",
         s_var="absolute",
         teos10=None,
@@ -63,6 +64,13 @@ class WaterMass:
             Value of specific heat capacity.
         rho_ref: float (default: 1035.0)
             Value of reference potential density, assuming Boussinesq approximation.
+        gravity: float or "gsw" (default: 9.81)
+            How sea pressure is obtained from depth for the equation of state.
+            A number is a constant gravitational acceleration [m s-2], giving the
+            Boussinesq hydrostatic pressure `rho_ref * gravity * depth`; this is
+            what most ocean models assume internally, and it needs no latitude.
+            Pass "gsw" instead to use `gsw.p_from_z`, whose gravity varies with
+            latitude -- that path requires a `lat` coordinate on the dataset.
         t_var: str ("conservative", "potential", or "in-situ")
             Does variable `t_name` represent "conservative", "potential", or "in-situ" temperature?
         s_var: str ("absolute" or "practical")
@@ -101,6 +109,16 @@ class WaterMass:
         self.eos = resolve_eos(eos)
         self.cp = cp
         self.rho_ref = rho_ref
+        if isinstance(gravity, str):
+            if gravity != "gsw":
+                raise ValueError(
+                    f"`gravity` must be a positive number or 'gsw', got {gravity!r}."
+                )
+        elif not isinstance(gravity, (int, float)) or gravity <= 0:
+            raise ValueError(
+                f"`gravity` must be a positive number or 'gsw', got {gravity!r}."
+            )
+        self.gravity = gravity
         # Remember whether the user supplied alpha/beta up front: if so, those are
         # honored as-is and never overwritten by EOS-derived values.
         self._user_alpha = "alpha" in self.grid._ds
@@ -165,6 +183,29 @@ class WaterMass:
             self.grid._ds.time.attrs = (
                 time_attrs  # For some reason these are not preserved by default
             )
+
+    def _pressure_from_height(self, z):
+        """Sea pressure [dbar] at height `z` [m], negative below the sea surface.
+
+        With a numeric `gravity` this is the Boussinesq hydrostatic pressure
+        `rho_ref * g * depth`, which is what most ocean models assume internally
+        and which needs no latitude. With `gravity="gsw"` it defers to
+        `gsw.p_from_z`, whose gravity varies with latitude and which therefore
+        requires a `lat` coordinate.
+        """
+        if self.gravity == "gsw":
+            if "lat" not in self.grid._ds:
+                raise ValueError(
+                    "`gravity='gsw'` converts depth to pressure with a "
+                    "latitude-dependent gravity and so needs a `lat` coordinate "
+                    "on the dataset, which is missing. Either add one (see "
+                    "`xwmt.add_gridcoords`) or use a constant `gravity=` instead."
+                )
+            return xr.apply_ufunc(
+                gsw.p_from_z, z, self.grid._ds.lat, 0, 0, dask="parallelized"
+            )
+        # 1 dbar = 1e4 Pa.
+        return self.rho_ref * self.gravity * (-z) * 1e-4
 
     def _compute_depth_coordinates(self):
         """Compute layer-center depth `z` and interface depth `z_interface` from Z_metrics."""
@@ -281,14 +322,7 @@ class WaterMass:
         # In-situ sea pressure [dbar] from depth, used by the EOS and by the
         # temperature/salinity kind conversions.
         if "p" not in self.grid._ds.data_vars:
-            self.grid._ds["p"] = xr.apply_ufunc(
-                gsw.p_from_z,
-                self.grid._ds.z,
-                self.grid._ds.lat,
-                0,
-                0,
-                dask="parallelized",
-            )
+            self.grid._ds["p"] = self._pressure_from_height(self.grid._ds.z)
 
         # `p_ref` is the pressure at which alpha/beta are evaluated; `p_density` is
         # the pressure at which the density variable itself is evaluated. For "rho"
@@ -303,14 +337,7 @@ class WaterMass:
                 raise ValueError(
                     f"`density_name = {density_name}` is not of form 'sigmaX' where 'X' is a number."
                 ) from e
-            p_ref = xr.apply_ufunc(
-                gsw.p_from_z,
-                -ref_km * 1000,
-                self.grid._ds.lat,
-                0,
-                0,
-                dask="parallelized",
-            )
+            p_ref = self._pressure_from_height(-ref_km * 1000)
             p_density = ref_km * 1000.0
         elif density_name == "rho":
             p_ref = self.grid._ds.p
@@ -344,6 +371,19 @@ class WaterMass:
             density = self.eos.rho(temp, salt, p_density)
             if "sigma" in density_name:
                 density = density - 1000.0
+                # `rho` arrives carrying the EOS's in-situ density metadata, and
+                # those attributes survive the subtraction. A potential density
+                # anomaly is neither in situ nor an absolute density, and the stale
+                # `long_name` is not merely cosmetic: xhistogram copies attributes
+                # onto the target bin coordinate, so it reaches figure axis labels
+                # as "in-situ density" on an axis that plots sigma.
+                density.attrs = {
+                    "long_name": (
+                        "potential density anomaly "
+                        f"(referenced to {p_density:.0f} dbar)"
+                    ),
+                    "units": "kg m-3",
+                }
             self.grid._ds[density_name] = density.rename(density_name)
 
         return self.grid._ds[density_name]
