@@ -88,6 +88,14 @@ Source modules under `xwmt/`, plus tests:
   - `add_gridcoords()` and `_rebuild_grid()` (module-level) reconstruct an `xgcm.Grid` from an
     existing one, preserving coords/metrics/boundary (and optionally adding more). `_rebuild_grid`
     is the single source of truth for grid reconstruction, used by both `__init__` and `add_gridcoords`.
+  - `infer_bins()` builds the bin edges used when a caller passes no `bins=`. Its two knobs are
+    independent and easy to conflate: `percentiles` bounds the *range* (as fractions in [0, 1],
+    despite the name), while `spacing` distributes the edges within it — `"linear"` (default,
+    equal-width bins) or `"quantiles"` (equal-population bins, at the quantiles
+    `np.linspace(*percentiles, nbins)`). Quantile spacing warns when a plateau in the field makes
+    edges repeat, since a zero-width bin divides by zero downstream. This is one of the few places
+    that deliberately breaks laziness — bin edges have to be concrete numbers — and it must hand
+    `np.linspace` plain floats, not the 0-d DataArrays `da.min()`/`da.max()` return.
 
 - **`attrs.py`**: the single source of truth for the CF-style metadata attached to xwmt output.
   Pure functions returning attribute dicts; no xarray objects are built here.
@@ -117,6 +125,12 @@ Source modules under `xwmt/`, plus tests:
   and tendency "processes" → dataset variable names. The constructor argument was called
   `xbudget_dict` before xbudget 0.7.0 renamed the concept; that keyword (and the
   `.xbudget_dict` attribute) still work but emit a `FutureWarning`.
+  Not every top-level recipe key is a budget: xbudget 0.8.0 added a reserved `constants`
+  table beside them. Walk budgets with `_budget_names(recipe)`, never `recipe.keys()`, or
+  the table gets read as a tracer. It is matched by name (`_RESERVED_RECIPE_KEYS`) rather
+  than imported from `xbudget.parse.CONSTANTS_KEY`, which does not exist before 0.8.0.
+  `_budget_names` also preserves recipe order, which is what makes process order — and so
+  the merge order and output metadata — reproducible.
 
 ### Key data flow in `wmt.py`
 
@@ -171,6 +185,17 @@ the ones actually present in the dataset.
   bounds, xbudget provenance passthrough, netCDF round-trip, and — just as important — that no
   input attribute leaks into a derived field. Mostly synthetic (no download); two tests use the
   Baltic fixture, since only real MOM6 output carries the attributes that can leak.
+- `test_infer_bins.py` — fast synthetic tests (no download) for the `bins=None` fallback: that it
+  works at all (it used to raise for *every* caller who omitted `bins=`, which the rest of the
+  suite missed because the functional tests all pass `bins=` explicitly), and that `percentiles`
+  (range) and `spacing` (distribution of edges) stay distinct. Uses a deliberately skewed field,
+  since linear and quantile spacing coincide on uniform data.
+- `test_recipe_shape.py` — fast synthetic tests (no download) for how the *shape* of the recipe
+  is read: that xbudget's reserved top-level `constants` table is skipped rather than taken for a
+  tracer, and that process order (hence variable order and the global attrs) is fixed by the
+  recipe rather than the interpreter's hash seed. Recipes are hand-built, so these mean the same
+  thing on xbudget 0.7.0 and 0.8.0. The hash-seed test shells out to a subprocess, since
+  `PYTHONHASHSEED` is read once at interpreter startup.
 - Baltic test data is fetched by the `baltic_dataset_path` / `baltic_grid_and_budgets` session
   fixtures in `conftest.py` (HTTPS-first, checksum-pinned, skips cleanly when offline). `*.nc`
   is gitignored. The pinned `DATA_SHA256` must be updated if the dataset is intentionally changed.

@@ -14,6 +14,23 @@ from xwmt.compute import calc_hlamdot_tendency
 # Dataset, and materializes them as a CF `bounds` variable).
 _BIN_EDGES_ATTR = "xwmt_bin_edges"
 
+# Top-level recipe keys that are not budgets. xbudget 0.8.0 added a reserved
+# `constants` table holding scalars shared across a recipe (a reference density,
+# a heat capacity); it sits beside the budgets but is not one, and every shipped
+# 0.8.0 preset has it. Matched by name rather than imported from
+# `xbudget.parse.CONSTANTS_KEY`, which does not exist before 0.8.0 and is not
+# public in it either — so the name is the only thing stable across both.
+_RESERVED_RECIPE_KEYS = frozenset({"constants"})
+
+
+def _budget_names(recipe):
+    """The recipe's budget keys, in recipe order, skipping reserved non-budgets.
+
+    Recipe order (rather than, say, a set) is deliberate: it decides the order
+    terms are merged in, and so has to be reproducible from run to run.
+    """
+    return [k for k in recipe if k not in _RESERVED_RECIPE_KEYS]
+
 
 def flatten_lol(lol):
     """Flatten a (possibly nested) list of lists into a single flat list.
@@ -177,7 +194,7 @@ class WaterMassTransformations(WaterMass):
         # BudgetQuery), so this single accessor works whether `recipe` is a
         # raw recipe or an aggregated dict.
         self.tracer_dict = {}
-        tracers = [k for k in recipe.keys() if k != "mass"]
+        tracers = [k for k in _budget_names(recipe) if k != "mass"]
         for tracer in tracers:
             lam = self._budget_metadata(recipe, tracer, ("lambda", "surface_lambda"))
             if lam is self._UNSET:
@@ -218,8 +235,12 @@ class WaterMassTransformations(WaterMass):
                 **{"density": ["sigma0", "sigma1", "sigma2", "sigma3", "sigma4"]},
             }
 
+        # `constants` (and any future reserved key) is kept in `self.recipe` so the
+        # recipe round-trips faithfully, but it has no `lhs`/`rhs` and is not a budget,
+        # so it gets no `processes_*_dict` and is skipped everywhere budgets are walked.
         self.recipe = copy.deepcopy(recipe)
-        for term, bdict in self.recipe.items():
+        for term in _budget_names(self.recipe):
+            bdict = self.recipe[term]
             setattr(self, f"processes_{term}_dict", {})
             for ptype, _processes in bdict.items():
                 if ptype in ["lhs", "rhs"]:
@@ -455,9 +476,16 @@ class WaterMassTransformations(WaterMass):
         >>> processes = wmt.available_processes()
         ['diffusion']
         """
-        processes = set()
-        for tracer in self.recipe.keys():
-            processes |= getattr(self, f"processes_{tracer}_dict").keys()
+        # Deduplicate while preserving recipe order. A `set` here made the returned
+        # order vary with the interpreter's hash seed, which propagated all the way
+        # into the output: it decides the order terms are merged, hence the order of
+        # the Dataset's variables and, until they were cleared, which single term's
+        # attributes ended up describing the whole Dataset.
+        budgets = _budget_names(self.recipe)
+        processes = {}
+        for tracer in budgets:
+            for process in getattr(self, f"processes_{tracer}_dict"):
+                processes.setdefault(process)
         if available:
             _processes = []
             for process in processes:
@@ -465,7 +493,7 @@ class WaterMassTransformations(WaterMass):
                     [
                         getattr(self, f"processes_{tracer}_dict").get(process, None)
                         in self.grid._ds
-                        for tracer in self.recipe.keys()
+                        for tracer in budgets
                         if getattr(self, f"processes_{tracer}_dict").get(process, None)
                         is not None
                     ]
@@ -473,7 +501,7 @@ class WaterMassTransformations(WaterMass):
                     _processes.append(process)
             return _processes
         else:
-            return processes
+            return list(processes)
 
     def datadict(self, tracer, term):
         """
@@ -769,6 +797,9 @@ class WaterMassTransformations(WaterMass):
                     if hlamdot[component] is not None
                 ]
             )
+            # As in `transformations_from_hlamdot`: don't let the heat component's
+            # attributes stand in for the heat/salt pair at the Dataset level.
+            hlamdot_transformed.attrs = {}
         else:
             hlamdot_transformed = self._transform_one(
                 hlamdot,
@@ -914,7 +945,16 @@ class WaterMassTransformations(WaterMass):
                 warnings.warn(
                     f"Process '{term}' for component {lambda_name} is unavailable."
                 )
-        return self._add_lambda_bounds(xr.merge(wmts))
+        merged = xr.merge(wmts)
+        # These are *per-term* Datasets, so xarray's default merge promotes one
+        # arbitrary term's attributes — its `long_name`, `xwmt_term`, `provenance`,
+        # `xbudget_path` — onto the merged Dataset, describing the whole result as
+        # if it were that one term. Clear them; `_annotate_dataset` sets the real
+        # global attributes. Note this cannot be done with `combine_attrs="drop"`,
+        # which would also strip the variable and coordinate attributes this whole
+        # module exists to attach (including the stashed lambda bin edges below).
+        merged.attrs = {}
+        return self._add_lambda_bounds(merged)
 
     def _annotate_transformation(self, transformed, lambda_name, term, integrate):
         """
