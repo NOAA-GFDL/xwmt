@@ -614,3 +614,59 @@ def test_invalid_gravity_rejected(bad):
         xwmt.WaterMass(
             grid, t_name="temperature", s_name="so", h_name="dz", gravity=bad
         )
+
+
+def test_practical_to_absolute_without_lonlat_raises_a_useful_error():
+    # Now that depth->pressure no longer needs a latitude, the practical->absolute
+    # salinity conversion is the only thing that does -- and it failed with a
+    # dtype-inference ValueError raised from inside `apply_ufunc`, naming neither
+    # `lon` nor `lat`. It should name both, and say how to avoid needing them.
+    grid = _grid_with_temp_salt(with_lat=False)
+    wm = xwmt.WaterMass(
+        grid,
+        t_name="temperature",
+        s_name="so",
+        h_name="dz",
+        eos="teos10",
+        t_var="potential",
+        s_var="practical",
+    )
+    with pytest.raises(ValueError) as excinfo:
+        wm.get_density("sigma0")
+    message = str(excinfo.value)
+    assert "`lon` and `lat`" in message
+    # It should point at the way out that needs no coordinates at all.
+    assert "wright97-full" in message
+
+
+def test_absolute_to_practical_without_lonlat_raises_a_useful_error():
+    # The mirror-image conversion (absolute salinity in, an EOS that wants
+    # practical salinity) goes through gsw.SP_from_SA and needs lon/lat just the same.
+    grid = _grid_with_temp_salt(with_lat=False)
+    wm = xwmt.WaterMass(
+        grid,
+        t_name="temperature",
+        s_name="so",
+        h_name="dz",
+        eos="wright97-full",
+        t_var="conservative",
+        s_var="absolute",
+    )
+    with pytest.raises(ValueError, match="absolute to practical"):
+        wm.get_density("sigma0")
+
+
+def test_lonlat_not_required_when_no_salinity_conversion_happens():
+    # The check must not fire when nothing asks for it: practical salinity into an
+    # EOS that takes practical salinity needs no geographic position at all.
+    grid = _grid_with_temp_salt(with_lat=False)
+    wm = xwmt.WaterMass(
+        grid,
+        t_name="temperature",
+        s_name="so",
+        h_name="dz",
+        eos="wright97-full",
+        t_var="potential",
+        s_var="practical",
+    )
+    assert np.all(np.isfinite(wm.get_density("sigma0").values))
