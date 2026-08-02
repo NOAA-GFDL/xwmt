@@ -5,6 +5,7 @@ from xhistogram.xarray import histogram
 import warnings
 
 from xwmt import attrs as _attrs
+from xwmt import units as _units
 from xwmt.wm import WaterMass, _EOS_UNSET
 from xwmt.compute import calc_hlamdot_tendency
 
@@ -238,6 +239,10 @@ class WaterMassTransformations(WaterMass):
         # `constants` (and any future reserved key) is kept in `self.recipe` so the
         # recipe round-trips faithfully, but it has no `lhs`/`rhs` and is not a budget,
         # so it gets no `processes_*_dict` and is skipped everywhere budgets are walked.
+        # Names of rates whose units could not be derived, accumulated over one
+        # `transformations_from_hlamdot` call and reported once at the end.
+        self._undescribed_units = set()
+
         self.recipe = copy.deepcopy(recipe)
         for term in _budget_names(self.recipe):
             bdict = self.recipe[term]
@@ -427,6 +432,109 @@ class WaterMassTransformations(WaterMass):
             if process is not None and process in self.grid._ds:
                 sources[process] = self.grid._ds[process]
         return sources
+
+    def _tendency_units(self, tracer, term):
+        """Units of the tendency driving `term` in the `tracer` budget.
+
+        Returns `(cf_units.Unit or None, source)`, where `source` names which of
+        the two authorities answered -- it is stamped on the output as
+        `xwmt_units_source` so a reader can tell a units string derived from the
+        data apart from one taken on the recipe author's word.
+
+        Precedence:
+
+        1. The tendency variable's own `units`. xbudget >= 0.8.0 infers and
+           stamps this for every term it materializes, so this is the usual
+           answer; it is also what a hand-built recipe pointing straight at a
+           model diagnostic gives.
+        2. The budget-level `units` declared in the recipe (xbudget's presets
+           declare `heat: "W"`, `salt: "kg s-1"`, `mass: "kg s-1"`, and
+           `BudgetQuery.aggregate` carries the key through). A declaration by
+           the recipe author, not a guess by xwmt.
+
+        Anything else is unknown, and stays unknown -- see
+        `transformations_from_hlamdot`.
+        """
+        _, process = self.process_names(tracer, term)
+        if process is not None and process in self.grid._ds:
+            parsed = _units.parse(self.grid._ds[process].attrs.get("units"))
+            if parsed is not None:
+                return parsed, "tendency"
+        declared = self._budget_metadata(self.recipe, tracer, ("units",))
+        if declared is not self._UNSET:
+            parsed = _units.parse(declared)
+            if parsed is not None:
+                return parsed, "recipe"
+        return None, "unknown"
+
+    def _lambda_units(self, lam_var):
+        """Units of the lambda field, i.e. of the bin width the rates are divided by.
+
+        Deliberately routed through the same `lambda_coord_attrs` call that
+        `_annotate_lambda_coord` uses, including its `_LAMBDA_UNITS` fallback for
+        the densities xwmt derives itself. The units xwmt *divides* by can then
+        never disagree with the units it *labels the bin axis* with.
+        """
+        source = self.grid._ds.get(lam_var)
+        return _units.parse(_attrs.lambda_coord_attrs(lam_var, source).get("units"))
+
+    def _transformation_units(self, lambda_name, term, component):
+        """Units of one transformation rate, derived rather than assumed.
+
+        Mirrors the dimensional operations in `datadict`,
+        `calc_hlamdot_and_lambda`, `rho_tend` and `_transform_one` step for
+        step; each line names the site it mirrors, because the two must not
+        drift apart. Every other operation in the pipeline is dimensionless: the
+        thickness in `compute.hlamdot_from_Jlam` divides in and multiplies
+        straight back out, the horizontal reduction is a bare sum (xbudget has
+        already multiplied cell area into the tendency), and the sign flip in
+        `transformations_from_hlamdot` is a sign.
+
+        Returns `(units string or None, source)`.
+        """
+        lam_var = self.get_lambda_var(lambda_name)
+
+        if self._is_density_lambda(lambda_name):
+            # A density transformation is built from one tracer budget per
+            # component, then scaled to a density tendency.
+            tracer = component
+            if tracer not in self._COMPONENTS:
+                return None, "unknown"
+        else:
+            tracer = lambda_name
+
+        tendency, source = self._tendency_units(tracer, term)
+        if tendency is None:
+            return None, source
+
+        if tracer == "salt":
+            # mirrors `datadict`: values x1000 restates kg of salt as grams
+            hlamdot = _units.scale(tendency, 1000.0)
+        elif tracer == "heat":
+            # mirrors `calc_hlamdot_and_lambda`/`rho_tend`: / cp
+            hlamdot = _units.divide(tendency, _units.parse(_units.CP_UNITS))
+        else:
+            # mirrors the generic-tracer branch: no conversion at all
+            hlamdot = tendency
+
+        if self._is_density_lambda(lambda_name):
+            # mirrors `rho_tend`: x alpha (heat) or x beta (salt). Their units
+            # are the reciprocal of the tracer they differentiate with respect
+            # to, derived structurally rather than read off the arrays -- see
+            # the `xwmt.units` module docstring.
+            coefficient = _units.reciprocal(
+                self._lambda_units(self.get_lambda_var(tracer))
+            )
+            # mirrors `calc_hlamdot_and_lambda`: x rho_ref
+            hlamdot = _units.multiply(
+                hlamdot, coefficient, _units.parse(_units.RHO_REF_UNITS)
+            )
+
+        # mirrors `_transform_one`: / the lambda bin width
+        rate = _units.divide(hlamdot, self._lambda_units(lam_var))
+        if rate is None:
+            return None, "unknown"
+        return _units.format_units(rate), source
 
     def _is_density_lambda(self, lambda_name):
         """Whether `lambda_name` is one of the density lambdas (sigma0...sigma4)."""
@@ -927,6 +1035,10 @@ class WaterMassTransformations(WaterMass):
         else:
             return
 
+        # Collected across all terms so that an unlabelled input costs one
+        # warning per call rather than one per variable.
+        self._undescribed_units = set()
+
         wmts = []
         for term in terms:
             transformed_hlamdot = self.transform_hlamdot_term(
@@ -954,7 +1066,27 @@ class WaterMassTransformations(WaterMass):
         # which would also strip the variable and coordinate attributes this whole
         # module exists to attach (including the stashed lambda bin edges below).
         merged.attrs = {}
+        self._warn_undescribed_units(lambda_name)
         return self._add_lambda_bounds(merged)
+
+    def _warn_undescribed_units(self, lambda_name):
+        """Warn once if any rate had to go out without a `units` attribute.
+
+        A silently-missing `units` reads as a regression from output that used
+        to carry one, so say so and say what to do about it -- but once per
+        call, not once per variable.
+        """
+        undescribed = sorted(n for n in self._undescribed_units if n is not None)
+        self._undescribed_units = set()
+        if not undescribed:
+            return
+        warnings.warn(
+            f"Could not determine the units of the {lambda_name} transformation "
+            f"rates {undescribed}, so the 'units' attribute is omitted rather "
+            f"than guessed. Give the input tendency a 'units' attribute, or -- "
+            f"for an xbudget-built budget -- label 'areacello' with "
+            f'units="m2" so xbudget can infer them.'
+        )
 
     def _annotate_transformation(self, transformed, lambda_name, term, integrate):
         """
@@ -973,6 +1105,15 @@ class WaterMassTransformations(WaterMass):
             source_attrs = _attrs.collect_source_attrs(
                 self.source_arrays(term, tracers)
             )
+            # Derived here rather than carried down from `calc_hlamdot_and_lambda`:
+            # `_transform_one` clears the transformed array's attributes
+            # unconditionally, and that wipe is worth keeping absolute. Every
+            # input the derivation needs is already in scope.
+            units, units_source = self._transformation_units(
+                lambda_name, term, component
+            )
+            if units is None:
+                self._undescribed_units.add(da.name)
             da.attrs = _attrs.transformation_attrs(
                 lambda_name,
                 lam_var,
@@ -984,6 +1125,8 @@ class WaterMassTransformations(WaterMass):
                 self._zc,
                 source_attrs=source_attrs,
                 side=_attrs.budget_side(source_attrs, self.recipe, term),
+                units=units,
+                units_source=units_source,
             )
 
         if isinstance(transformed, xr.Dataset):
@@ -1043,10 +1186,28 @@ class WaterMassTransformations(WaterMass):
         if das:
             summed = sum(das)
             # `sum` drops attributes, so describe the sum from one contributor
-            # (all share lambda, units and cell_methods) plus the list of terms
-            # that went into it.
+            # (all share lambda and cell_methods) plus the list of terms that
+            # went into it.
+            base_attrs = das[0].attrs
+            seen = [da.attrs.get("units") for da in das]
+            if not _units.same_units(seen):
+                # Now that units are derived rather than constant, summands can
+                # genuinely disagree -- a budget whose terms point at
+                # differently-labelled diagnostics, say. Add them anyway (the
+                # numbers are what they have always been) but decline to claim
+                # units for the result.
+                warnings.warn(
+                    f"Summing '{newterm}' from terms with different units "
+                    f"{sorted(set(str(u) for u in seen))}; the sum is left "
+                    f"without a 'units' attribute."
+                )
+                base_attrs = {
+                    k: v
+                    for k, v in base_attrs.items()
+                    if k not in ("units", "xwmt_units_source")
+                }
             summed.attrs = _attrs.summed_term_attrs(
-                das[0].attrs, newterm, present, component=component
+                base_attrs, newterm, present, component=component
             )
             ds_terms[newterm] = summed
 

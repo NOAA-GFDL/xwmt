@@ -61,6 +61,11 @@ def baltic_dataset_path():
 def baltic_grid_and_budgets(baltic_dataset_path):
     """Build the xgcm grid and aggregated MOM6 budget dict from the Baltic test dataset."""
     ds = xr.open_dataset(baltic_dataset_path, decode_timedelta=False).isel(time=0)
+    # The published test file leaves `areacello` unlabelled. xbudget multiplies
+    # it into every tendency, so without this it cannot infer the units of the
+    # terms it materializes and xwmt has nothing to derive from -- 5 of 56 terms
+    # come back with units instead of all 56.
+    ds["areacello"].attrs.setdefault("units", "m2")
     coords = {
         "X": {"center": "xh", "outer": "xq"},
         "Y": {"center": "yh", "outer": "yq"},

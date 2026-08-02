@@ -8,7 +8,7 @@ its own copy of the dataset.
 
 Every one of those is computed from model diagnostics, so none of them may keep
 the attributes of the fields it was computed from: a transformation rate in
-kg s-1 derived from a tendency in W m-2 must not describe itself as W m-2. The
+kg s-1 derived from a tendency in W must not describe itself as W. The
 two guards for that are :func:`strip_inherited_attrs`, which clears what
 arithmetic dragged along, and :func:`set_default_attrs`, which fills in xwmt's
 own description without displacing anything an upstream package set deliberately.
@@ -29,20 +29,52 @@ Conventions followed here:
 - Attributes set by upstream packages are never overwritten; see
   :func:`set_default_attrs`.
 
-Why every transformation is in ``kg s-1``
------------------------------------------
-The tendencies reaching xwmt are already *extensive* -- the xbudget conventions
-multiply the horizontal cell area into every term, so heat tendencies arrive in
-W and salt tendencies in kg s-1. xwmt divides the heat tendency by `cp` and
-scales the salt tendency to grams, which makes ``hlamdot`` a mass-weighted
-tendency (mass x lambda per second); binning it along the vertical and dividing
-by the bin width then leaves ``kg s-1``.
+What units a transformation is in
+---------------------------------
+Derived, not assumed. :meth:`~xwmt.wmt.WaterMassTransformations._transformation_units`
+walks the same dimensional operations the numerics do -- there are only six, and
+they are tabulated in `CLAUDE.md` -- using :mod:`xwmt.units`. The three shapes
+it reduces to are::
 
-That holds for both entry points. `integrate_transformations` additionally sums
-over the horizontal, so its result is a domain total; `map_transformations`
-leaves the horizontal dimensions in place, so its result is a total *per grid
-cell* rather than a flux density per square metre. Hence both carry
-``units = "kg s-1"``, and the mapped variant says so explicitly in its `comment`.
+    heat     U(tendency) / U(cp) / U(theta)         W / (J kg-1 degC-1) / degC  = kg s-1
+    salt     U(tendency) / 1000 / U(S)              kg s-1 / 1000 / 0.001       = kg s-1
+    generic  U(tendency) / U(lambda)                mol s-1 / (mol m-3)         = m3 s-1
+
+A density lambda reduces to the heat and salt cases: the `rho_ref` factor
+cancels against the density's own ``kg m-3``, which is exactly why the
+Boussinesq scaling is dimensionally invisible, and `alpha`/`beta` cancel the
+tracer's units because they are its reciprocal.
+
+With the xbudget conventions -- cell area already multiplied in, so heat
+tendencies arrive in W and salt tendencies in kg s-1 -- every rate is a **mass**
+tendency in ``kg s-1``. A tracer budget that never multiplies by a density is a
+**volume** tendency in ``m3 s-1`` instead. Those are the only two answers a
+water mass transformation can have; anything else means an input was not what
+the conventions assume, and now says so rather than being relabelled ``kg s-1``.
+
+Two conventions are worth stating because they are what make the algebra close:
+
+- **Practical salinity is dimensionless with a scale of 1e-3**, the same unit as
+  ``g kg-1``. That is what the ``* 1000.0`` in `datadict` pairs with. See the
+  :mod:`xwmt.units` docstring, which also explains why this differs from the
+  alias `xbudget.units` uses.
+- **`cp` and `rho_ref` units are fixed by xwmt's own API contract**, not read
+  from a recipe's `constants` table -- xwmt uses the *values* its caller passed,
+  so taking units from a table it did not take the value from would be a
+  category error.
+
+When the units of an input cannot be determined, the `units` key is **omitted**
+rather than guessed, and `xwmt_units_source` records which authority answered
+(``"tendency"``, ``"recipe"`` or ``"unknown"``). A rate labelled with the wrong
+units is worse than one labelled with none.
+
+None of this varies between the two entry points: `integrate_transformations`
+additionally sums over the horizontal, so its result is a domain total, while
+`map_transformations` leaves the horizontal dimensions in place and so returns a
+total *per grid cell* rather than a flux density per square metre. That is a
+difference in what is summed, not in dimension -- xwmt never multiplies by cell
+area -- so both carry the same `units`, and the mapped variant distinguishes
+itself through `cell_methods` and its `comment`.
 """
 
 import numbers
@@ -50,7 +82,6 @@ import numbers
 from xwmt.version import __version__
 
 __all__ = [
-    "WMT_UNITS",
     "set_default_attrs",
     "strip_inherited_attrs",
     "netcdf_safe",
@@ -63,9 +94,6 @@ __all__ = [
     "derived_field_attrs",
 ]
 
-
-#: Units of every water mass transformation rate xwmt returns (see module docstring).
-WMT_UNITS = "kg s-1"
 
 #: Attributes copied straight through from the source xbudget tendency variable,
 #: so that upstream provenance metadata reaches the output without xwmt having to
@@ -286,6 +314,8 @@ def transformation_attrs(
     *,
     source_attrs=None,
     side=None,
+    units=None,
+    units_source=None,
 ):
     """Attributes for a single transformation-rate variable.
 
@@ -313,10 +343,18 @@ def transformation_attrs(
         Output of :func:`collect_source_attrs` for the underlying tendencies.
     side : str, optional
         "lhs"/"rhs", from :func:`budget_side`.
+    units : str, optional
+        Units of the rate, derived by
+        :meth:`~xwmt.wmt.WaterMassTransformations._transformation_units`. None
+        when they could not be determined, in which case the key is omitted
+        rather than guessed.
+    units_source : str, optional
+        Which authority supplied `units` -- "tendency", "recipe" or "unknown".
     """
     source_attrs = source_attrs or {}
     attrs = {
-        "units": WMT_UNITS,
+        "units": units,
+        "xwmt_units_source": units_source,
         "long_name": _long_name(lam_name, f"due to {prettify(term)}", component),
         "cell_methods": _cell_methods(horizontal_dims, zdim, integrate),
         "comment": _transformation_comment(lam_name, integrate),

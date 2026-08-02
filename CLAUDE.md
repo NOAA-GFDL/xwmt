@@ -99,9 +99,12 @@ Source modules under `xwmt/`, plus tests:
 
 - **`attrs.py`**: the single source of truth for the CF-style metadata attached to xwmt output.
   Pure functions returning attribute dicts; no xarray objects are built here.
-  - Every transformation rate is in **`"kg s-1"`** (`WMT_UNITS`), for both entry points — the
-    xbudget conventions multiply cell area into the tendencies, so `map_transformations` returns
-    totals *per grid cell*, not a flux density per m². The module docstring derives this.
+  - `units` is **derived per call**, not a constant — see `units.py` below and
+    `WaterMassTransformations._transformation_units`. With xbudget-conventional inputs every
+    rate is `"kg s-1"`; a tracer budget that never multiplies by a density is `"m3 s-1"`.
+    Both entry points agree, because xwmt never multiplies by cell area: `map_transformations`
+    returns totals *per grid cell*, not a flux density per m², which is a difference in what
+    is summed rather than in dimension.
   - Units are UDUNITS-2 parseable (`"kg s-1"`, never `"kg/s"`), and `standard_name` is only set
     where a real CF standard name exists — there is none for a WMT rate.
   - Per-process prose stays out of xwmt: `long_name`s are generated mechanically from the term
@@ -113,6 +116,22 @@ Source modules under `xwmt/`, plus tests:
     `p` (dbar) reporting `units: "m"`, `standard_name: "cell_thickness"` from its thickness input.
   - `netcdf_safe` flattens xbudget's mixed str/float `provenance` lists, which are otherwise not
     netCDF-serializable.
+
+- **`units.py`**: a thin, fail-soft layer over `cf_units` (which arrives with `xbudget >= 0.8.0`),
+  not an algebra of its own. It owns three things cf-units cannot give: the `psu` alias, the
+  spelling of emitted strings, and the units of xwmt's own `cp`/`rho_ref` arguments.
+  - Pure and total — `parse` returns `None` rather than raising, and unknown *propagates*
+    through every operation rather than becoming a fabricated dimension. Same contract as
+    `xbudget.units`, deliberately.
+  - **`psu` is aliased to `"0.001"`**, i.e. dimensionless-with-a-scale, which cf-units agrees is
+    the same unit as `g kg-1`. This is what the `×1000` in `datadict` pairs with. `xbudget`
+    aliases `psu` to `"1"` instead; that is not a disagreement — xbudget only checks
+    *convertibility* and says outright that it discards the residual 1e-3, which is exactly the
+    factor xwmt divides by.
+  - `format_units` rewrites cf-units' `.` separator to a space, but must not touch the decimal
+    point of a leading numeric scale (`"0.001"` is not `"0 001"`).
+  - `scale(unit, factor)` exists so that the direction is stated once: multiplying an array's
+    *values* by 1000 divides its *units* by 1000.
 
 - **`compute.py`**: small functional helpers for converting interfacial fluxes (`Jlam`) or
   layer-integrated tendencies into `hlamdot` — the **vertically-extensive tracer tendency**
@@ -162,12 +181,33 @@ the ones actually present in the dataset.
 
 ### Sign conventions & units (easy to get wrong)
 
-- Salt tendencies are multiplied by 1000 (kg→g) in `datadict`.
 - `transformations_from_hlamdot` negates the transformed tendency (`-transformed_hlamdot`):
   transformation is defined as convergence into a layer.
-- Density tendencies are scaled by `rho_ref` (Boussinesq assumption — see the inline
-  "Is this correct for non-boussinesq case?" note in `calc_hlamdot_and_lambda`).
-- Heat tendencies are divided by `cp` (specific heat) to get a temperature-like tendency.
+
+**The pipeline has exactly six dimensional operations, and nothing else.** This table is the
+drift check for `_transformation_units`, which mirrors it step for step — if you add a factor
+to the numerics, it belongs here and there:
+
+| site | operation | units factor |
+|---|---|---|
+| `datadict` | `tend_arr * 1000.0`, salt only (kg→g) | units **÷ 1000** |
+| `calc_hlamdot_and_lambda` | heat branch `/ self.cp` | ÷ `J kg-1 degC-1` |
+| `rho_tend` | heat: `-(alpha/cp) * heat_tend` | × `U(θ)⁻¹`, ÷ `J kg-1 degC-1` |
+| `rho_tend` | salt: `beta * salt_tend` | × `U(S)⁻¹` |
+| `calc_hlamdot_and_lambda` | density branch `* self.rho_ref` (Boussinesq — see the inline "Is this correct for non-boussinesq case?" note) | × `kg m-3` |
+| `_transform_one` | `transformed / np.diff(bin_bounds)` | ÷ lambda units |
+
+Things that look dimensional and are not:
+
+- `compute.hlamdot_from_Jlam` divides by `h` and multiplies straight back by it — the thickness
+  cancels exactly. It is a NaN/zero-thickness mask, not a metric.
+- **xwmt never multiplies by cell area.** xbudget bakes `areacello` into every tendency, so the
+  horizontal reduction is a bare `.sum()` and `integrate=True` vs `False` is dimensionally a
+  no-op.
+- `alpha`/`beta` units are **derived** as `U(θ)⁻¹`/`U(S)⁻¹`, never read from the arrays `xeos`
+  returns: xeos labels `beta` `"1"` for its practical-salinity backends and `"kg g-1"` for its
+  absolute-salinity ones while returning the same magnitude, so reading the label would make
+  identical arithmetic emit units differing by 1000 depending on the caller's `eos=`.
 
 ## Tests
 
@@ -185,6 +225,11 @@ the ones actually present in the dataset.
   bounds, xbudget provenance passthrough, netCDF round-trip, and — just as important — that no
   input attribute leaks into a derived field. Mostly synthetic (no download); two tests use the
   Baltic fixture, since only real MOM6 output carries the attributes that can leak.
+- `test_units.py` — fast synthetic tests (no download) for `units.py` in isolation: parse/format
+  round-trips, the `psu` alias and its 1e-3 scale, unknown propagation, and the three pipeline
+  formulas written out by hand. A failure here is a units bug; a failure in `test_attrs.py`'s
+  units tests is a wiring bug. Also cross-checks every emitted string against UDUNITS-2 via
+  `pytest.importorskip("cf_units")`, matching the convention in the sibling `xeos` package.
 - `test_infer_bins.py` — fast synthetic tests (no download) for the `bins=None` fallback: that it
   works at all (it used to raise for *every* caller who omitted `bins=`, which the rest of the
   suite missed because the functional tests all pass `bins=` explicitly), and that `percentiles`
@@ -199,6 +244,9 @@ the ones actually present in the dataset.
 - Baltic test data is fetched by the `baltic_dataset_path` / `baltic_grid_and_budgets` session
   fixtures in `conftest.py` (HTTPS-first, checksum-pinned, skips cleanly when offline). `*.nc`
   is gitignored. The pinned `DATA_SHA256` must be updated if the dataset is intentionally changed.
+  The fixture labels `areacello` with `units="m2"`, which the published file omits: xbudget
+  multiplies it into every tendency, so without it xbudget can infer units for only 6 of 57
+  terms and xwmt has nothing to derive from. Do not drop that line.
 
 ## Versioning
 

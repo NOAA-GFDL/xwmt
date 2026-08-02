@@ -57,6 +57,10 @@ def _multi_process_grid():
     grid._ds["temperature"].attrs.update(
         {"units": "degC", "long_name": "potential temperature"}
     )
+    # Area-extensive, as the xbudget conventions deliver them; this test is
+    # about attribute determinism, so give the tendencies units and let the
+    # units machinery be exercised elsewhere.
+    grid._ds["heat_tendency"].attrs.update({"units": "W"})
     rhs = ["diffusion", "advection", "frazil_ice", "boundary_forcing"]
     for name in rhs:
         grid._ds[f"heat_{name}"] = grid._ds["heat_tendency"].copy()

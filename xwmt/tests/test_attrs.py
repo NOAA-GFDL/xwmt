@@ -38,7 +38,10 @@ def _wmt_and_bins(**kwargs):
     grid._ds["temperature"].attrs.update(
         {"units": "degC", "long_name": "potential temperature"}
     )
-    grid._ds["heat_tendency"].attrs.update({"units": "W m-2"})
+    # Extensive, per grid cell: the xbudget conventions multiply cell area into
+    # every tendency before xwmt sees it, so this is W and not W m-2. (The
+    # fixture builds `ones * dz` on a grid with `rA = 1.0`.)
+    grid._ds["heat_tendency"].attrs.update({"units": "W"})
     wmt = xwmt.WaterMassTransformations(
         grid, budget, cp=1.0, rho_ref=1.0, method="xhistogram", **kwargs
     )
@@ -202,6 +205,212 @@ def test_surface_only_output_is_described():
     wmt = xwmt.WaterMassTransformations(_surface_grid(), budget)
     h_i = wmt.grid._ds[f"{wmt.h_name}_i"]
     assert "placeholder" in h_i.attrs["long_name"]
+
+
+def _generic_tracer_grid(tracer_units="mol s-1", lambda_units="mol m-3"):
+    """A budget that is neither heat, salt, nor mass.
+
+    Exercises the generic-tracer branch of `calc_hlamdot_and_lambda`, which
+    applies no conversion at all -- no `cp`, no salt-to-grams rescaling, no
+    reference density. Whatever units come out are the input tendency's divided
+    by the lambda's.
+    """
+    grid, _, edges = _heat_tendency_grid()
+    ds = grid._ds
+    ds["dissic"] = ds["temperature"] * 0.0 + np.linspace(
+        0.0, 1.0, ds.sizes["z_l"]
+    ).reshape(ds["temperature"].shape)
+    ds["dissic"].attrs.update(
+        {"units": lambda_units, "long_name": "dissolved inorganic carbon"}
+    )
+    ds["dic_tendency"] = ds["heat_tendency"].copy()
+    ds["dic_tendency"].attrs.update({"units": tracer_units})
+    budget = {
+        "mass": {"lambda": None, "thickness": "dz", "lhs": {}, "rhs": {}},
+        "dic": {"lambda": "dissic", "lhs": {"tendency": "dic_tendency"}, "rhs": {}},
+    }
+    return grid, budget, edges
+
+
+def test_generic_tracer_rate_is_a_volume_not_a_mass_rate():
+    """A tracer budget with no density factor anywhere is a volume tendency.
+
+    The generic-tracer path multiplies by nothing, so a `mol s-1` tendency
+    binned in a `mol m-3` concentration is `m3 s-1`. Asserting `kg s-1` here --
+    as a hardcoded constant did -- is simply false.
+    """
+    grid, budget, edges = _generic_tracer_grid()
+    wmt = xwmt.WaterMassTransformations(grid, budget, method="xhistogram")
+    transformations = wmt.integrate_transformations("dic", bins=edges)
+    assert transformations["tendency"].attrs["units"] == "m3 s-1"
+
+
+def test_area_intensive_tendency_is_reported_as_area_intensive():
+    """xwmt never multiplies by cell area, so a per-m2 input stays per-m2.
+
+    The xbudget conventions deliver area-extensive tendencies, but nothing
+    enforces that for a hand-built recipe. Asserting `kg s-1` regardless -- as a
+    hardcoded constant did -- mislabels this case exactly as badly as it
+    mislabelled the generic tracer.
+    """
+    grid, budget, edges = _heat_tendency_grid()
+    grid._ds["temperature"].attrs.update({"units": "degC"})
+    grid._ds["heat_tendency"].attrs.update({"units": "W m-2"})
+    wmt = xwmt.WaterMassTransformations(
+        grid, budget, cp=1.0, rho_ref=1.0, method="xhistogram"
+    )
+    transformations = wmt.integrate_transformations("heat", bins=edges)
+    assert transformations["tendency"].attrs["units"] == "m-2 kg s-1"
+
+
+def _density_grid():
+    """A minimal grid with both heat and salt tendencies, for a density lambda."""
+    grid, budget, edges = _heat_tendency_grid()
+    ds = grid._ds
+    ds["temperature"].attrs.update({"units": "degC"})
+    ds["heat_tendency"].attrs.update({"units": "W"})
+    ds["so"] = ds["temperature"] * 0.0 + 35.0
+    ds["so"].attrs.update({"units": "psu"})
+    ds["salt_tendency"] = ds["heat_tendency"].copy()
+    ds["salt_tendency"].attrs.update({"units": "kg s-1"})
+    # `get_density` needs a position to convert between practical and absolute
+    # salinity (`lon` as well as `lat`, for the practical-salinity backends).
+    grid._ds = ds.assign_coords(
+        {
+            "lat": xr.DataArray([[45.0]], dims=("x", "y")),
+            "lon": xr.DataArray([[-30.0]], dims=("x", "y")),
+        }
+    )
+    budget["salt"] = {
+        "lambda": "so",
+        "lhs": {"tendency": "salt_tendency"},
+        "rhs": {},
+    }
+    return grid, budget, edges
+
+
+def test_density_components_and_their_sum_are_all_mass_rates():
+    """rho_ref cancels against the density lambda's own kg m-3.
+
+    That cancellation is why the Boussinesq scaling is dimensionally invisible,
+    and it is what makes the heat and salt components of a density
+    transformation commensurable enough to add.
+    """
+    grid, budget, _ = _density_grid()
+    wmt = xwmt.WaterMassTransformations(grid, budget, method="xhistogram")
+    transformations = wmt.integrate_transformations(
+        "sigma0", bins=np.linspace(0.0, 40.0, 9), sum_components=True
+    )
+    rates = [v for v in transformations.data_vars if not v.endswith("_bnds")]
+    assert "tendency_heat" in rates and "tendency_salt" in rates and "tendency" in rates
+    for name in rates:
+        assert transformations[name].attrs["units"] == "kg s-1", name
+
+
+@pytest.mark.parametrize("eos", ["teos10", "jmd95"])
+def test_derived_units_do_not_depend_on_the_equation_of_state(eos):
+    """`alpha`/`beta` units are derived, never read off the arrays xeos returns.
+
+    xeos labels `beta` "1" for its practical-salinity backends and "kg g-1" for
+    its absolute-salinity ones while returning values of the same magnitude, so
+    reading the label would make identical arithmetic emit units differing by a
+    factor of 1000 depending on which EOS the caller picked.
+    """
+    grid, budget, _ = _density_grid()
+    wmt = xwmt.WaterMassTransformations(grid, budget, eos=eos, method="xhistogram")
+    transformations = wmt.integrate_transformations(
+        "sigma0", bins=np.linspace(0.0, 40.0, 9), sum_components=True
+    )
+    assert transformations["tendency_salt"].attrs["units"] == "kg s-1"
+    assert transformations["tendency_heat"].attrs["units"] == "kg s-1"
+
+
+def test_generic_tracer_over_a_mass_fraction_is_a_mass_rate():
+    """A generic tracer can legitimately be a mass rate -- it depends on the lambda."""
+    grid, budget, edges = _generic_tracer_grid(lambda_units="mol kg-1")
+    wmt = xwmt.WaterMassTransformations(grid, budget, method="xhistogram")
+    transformations = wmt.integrate_transformations("dic", bins=edges)
+    assert transformations["tendency"].attrs["units"] == "kg s-1"
+
+
+def test_units_fall_back_to_the_recipes_declaration():
+    """An unlabelled tendency still resolves if the recipe declares the budget's units.
+
+    That is the recipe author asserting the convention, not xwmt guessing, so it
+    is recorded as a different `xwmt_units_source`.
+    """
+    grid, budget, edges = _heat_tendency_grid()
+    grid._ds["temperature"].attrs.update({"units": "degC"})
+    budget["heat"]["units"] = "W"
+    wmt = xwmt.WaterMassTransformations(
+        grid, budget, cp=1.0, rho_ref=1.0, method="xhistogram"
+    )
+    da = wmt.integrate_transformations("heat", bins=edges)["tendency"]
+    assert da.attrs["units"] == "kg s-1"
+    assert da.attrs["xwmt_units_source"] == "recipe"
+
+
+def test_a_labelled_tendency_beats_the_recipes_declaration():
+    """The data wins over the declaration: it is the more specific statement."""
+    grid, budget, edges = _heat_tendency_grid()
+    grid._ds["temperature"].attrs.update({"units": "degC"})
+    grid._ds["heat_tendency"].attrs.update({"units": "W m-2"})
+    budget["heat"]["units"] = "W"
+    wmt = xwmt.WaterMassTransformations(
+        grid, budget, cp=1.0, rho_ref=1.0, method="xhistogram"
+    )
+    da = wmt.integrate_transformations("heat", bins=edges)["tendency"]
+    assert da.attrs["units"] == "m-2 kg s-1"
+    assert da.attrs["xwmt_units_source"] == "tendency"
+
+
+def test_undeterminable_units_are_omitted_not_guessed():
+    """No `units` key at all, and one warning saying why -- never a wrong string."""
+    grid, budget, edges = _heat_tendency_grid()
+    grid._ds["temperature"].attrs.update({"units": "degC"})
+    # No units on `heat_tendency`, and no budget-level declaration.
+    wmt = xwmt.WaterMassTransformations(
+        grid, budget, cp=1.0, rho_ref=1.0, method="xhistogram"
+    )
+    with pytest.warns(UserWarning, match="Could not determine the units"):
+        da = wmt.integrate_transformations("heat", bins=edges)["tendency"]
+    assert "units" not in da.attrs
+    assert da.attrs["xwmt_units_source"] == "unknown"
+    # Everything else is still described.
+    assert da.attrs["long_name"].startswith("Water mass transformation rate")
+
+
+def test_summing_terms_with_different_units_declines_to_label_the_sum():
+    """Adding W to W m-2 is a real physics warning, so it earns one.
+
+    The terms are still summed -- the numbers are what they have always been --
+    but the result may not claim either summand's units.
+    """
+    grid, budget, edges = _heat_tendency_grid()
+    grid._ds["temperature"].attrs.update({"units": "degC"})
+    grid._ds["extensive"] = grid._ds["heat_tendency"].copy()
+    grid._ds["extensive"].attrs.update({"units": "W"})
+    grid._ds["intensive"] = grid._ds["heat_tendency"].copy()
+    grid._ds["intensive"].attrs.update({"units": "W m-2"})
+    # Both on the same side of the budget, so `group_processes` sums them
+    # together rather than into separate groups.
+    budget["heat"]["lhs"] = {}
+    budget["heat"]["rhs"] = {"extensive": "extensive", "intensive": "intensive"}
+    wmt = xwmt.WaterMassTransformations(
+        grid, budget, cp=1.0, rho_ref=1.0, method="xhistogram"
+    )
+    with pytest.warns(UserWarning, match="different units"):
+        transformations = wmt.integrate_transformations(
+            "heat", bins=edges, group_processes=True
+        )
+    # The contributing terms keep their own, correct, units...
+    assert transformations["extensive"].attrs["units"] == "kg s-1"
+    assert transformations["intensive"].attrs["units"] == "m-2 kg s-1"
+    # ...but their sum may not claim either.
+    grouped = transformations["material_transformation"]
+    assert "units" not in grouped.attrs
+    assert "xwmt_units_source" not in grouped.attrs
+    assert grouped.attrs["xwmt_summed_terms"] == "extensive, intensive"
 
 
 def test_real_budget_output_is_clean_and_carries_xbudget_provenance(

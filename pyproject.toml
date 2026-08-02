@@ -48,7 +48,14 @@ dependencies = [
     # 0.7.0 removed the old top-level `aggregate()`/`flatten_lol`; xwmt's
     # test/example flow uses `collect_budgets` + `BudgetQuery(...).aggregate()`
     # instead. See the xbudget 0.7 CHANGELOG.
-    "xbudget >= 0.7.0",
+    #
+    # >= 0.8.0 for metadata, not behaviour: xwmt derives the `units` of its
+    # output from its inputs (see `xwmt.units`), and 0.8.0 is where xbudget
+    # began inferring and stamping `units` onto the terms it materializes and
+    # declaring budget-level units in its presets. Against 0.7.0 there is
+    # nothing to derive from and every rate goes out unlabelled. 0.8.0 also
+    # brings `cf-units`, which is what xwmt does the unit algebra with.
+    "xbudget >= 0.8.0",
 ]
 
 [project.optional-dependencies]
