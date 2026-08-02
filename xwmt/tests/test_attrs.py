@@ -520,14 +520,20 @@ def test_potential_density_anomaly_is_described(water_mass):
 
 
 def test_eos_metadata_is_not_overwritten(water_mass):
-    """xeos describes alpha/beta better than xwmt could; only leakage is cleared."""
+    """xeos describes alpha/beta better than xwmt could; only leakage is cleared.
+
+    Matched by prefix rather than in full: what is being pinned is that xwmt
+    leaves xeos's description alone, not xeos's exact wording, which xwmt has no
+    business freezing (it has since gained a "(wrt absolute salinity)" suffix).
+    """
     ds = water_mass.grid._ds
     for name in ("alpha", "beta"):
-        assert ds[name].attrs["long_name"] == (
+        expected = (
             "thermal expansion coefficient"
             if name == "alpha"
             else "haline contraction coefficient"
         )
+        assert ds[name].attrs["long_name"].startswith(expected)
         for leaked in ("cell_methods", "cell_measures", "time_avg_info"):
             assert leaked not in ds[name].attrs
 
