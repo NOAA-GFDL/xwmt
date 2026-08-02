@@ -18,6 +18,7 @@ import xgcm
 
 import xwmt
 from xwmt import attrs as xattrs
+from xwmt import units as xunits
 
 from xwmt.tests.test_bugfixes import (
     _heat_tendency_grid,
@@ -536,6 +537,42 @@ def test_eos_metadata_is_not_overwritten(water_mass):
         assert ds[name].attrs["long_name"].startswith(expected)
         for leaked in ("cell_methods", "cell_measures", "time_avg_info"):
             assert leaked not in ds[name].attrs
+
+
+def test_converted_temperature_does_not_inherit_the_salinity_label():
+    """`gsw`'s conversions take absolute salinity first, and attrs follow arg 0.
+
+    So a potential temperature converted for a practical-salinity backend came
+    back labelled "psu" -- a temperature claiming a salinity's units. Harmless to
+    the arithmetic, but it is exactly the leak this module exists to stop, and
+    xeos >= 0.2.3 warns about it because it cannot tell a mislabelled input from
+    a genuinely wrong one.
+    """
+    from xwmt.eos import convert_ts, resolve_eos
+
+    grid = minimal_grid()
+    ds = grid._ds
+    ds["temperature"].attrs.update({"units": "degC"})
+    ds["so"].attrs.update({"units": "psu", "standard_name": "sea_water_salinity"})
+    ds = ds.assign_coords({"lon": xr.DataArray([[-30.0]], dims=("x", "y"))})
+    p = xr.DataArray(np.array([0.0]), dims=("z_l",))
+
+    # jmd95 wants potential temperature + practical salinity, so both are
+    # converted from the conservative/absolute defaults and both go through
+    # absolute salinity on the way.
+    temp, salt = convert_ts(
+        ds["temperature"],
+        ds["so"],
+        resolve_eos("jmd95"),
+        "conservative",
+        "absolute",
+        p,
+        lon=ds["lon"],
+        lat=ds["lat"],
+    )
+    assert temp.attrs["units"] == "degC", "temperature must not be labelled psu"
+    assert "standard_name" not in temp.attrs
+    assert xunits.parse(salt.attrs["units"]) == xunits.parse("g kg-1")
 
 
 def test_user_supplied_alpha_beta_are_left_alone():

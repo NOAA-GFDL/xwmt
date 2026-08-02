@@ -39,12 +39,21 @@ The coefficients
 `alpha` and `beta` units are **derived** (`U(alpha) = U(theta)^-1`,
 `U(beta) = U(S)^-1`), never read from the arrays `xeos` returns. `xeos` spells
 `beta`'s units per salinity kind -- a bare multiplier for its practical-salinity
-backends, ``"kg g-1"`` for its absolute-salinity ones -- and before
-hdrake/xeos#11 those two spellings were not even the same unit, while every
-backend returned values of the same magnitude (~7.0e-4 to ~8.2e-4). Reading the
-label therefore made output depend on which equation of state the caller picked.
-Deriving structurally is immune to that whatever xeos settles on, and also
-covers a caller who supplies `alpha`/`beta` themselves.
+backends, ``"kg g-1"`` for its absolute-salinity ones -- and until xeos 0.2.3
+those two spellings were not even the same unit, while every backend returned
+values of the same magnitude (~7.0e-4 to ~8.2e-4), so reading the label made
+output depend on which equation of state the caller picked (hdrake/xeos#11).
+
+xwmt requires xeos >= 0.2.3, so that particular hazard is behind us, but the
+derivation stays: it is what makes the result independent of the backend by
+construction rather than by the version pin, and it is the only thing that
+covers a caller who supplies `alpha`/`beta` themselves. `test_attrs.py` pins it
+with a `teos10`/`jmd95` comparison.
+
+Note xeos >= 0.2.3 reads `psu` the same way this module does -- dimensionless
+with a scale of 1e-3 -- and warns when an input's own `units` disagree with what
+its kernels expect. The two packages therefore agree on the convention; xwmt
+keeps its own alias table because xeos's is private.
 """
 
 import re

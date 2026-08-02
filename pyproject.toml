@@ -28,13 +28,19 @@ dependencies = [
     # Equations of state are delegated to `xeos`, which vendors the JMD95/Wright/
     # UNESCO/MDJWF/Roquet/MPAS kernels as pure-numpy and pulls in `gsw` for TEOS-10.
     #
-    # >= 0.2.1 for metadata, not behaviour: xwmt defers to xeos for the attributes
-    # on `alpha`/`beta`/`rho` (see `xwmt.attrs.set_default_attrs`), and 0.2.1 is
-    # where those became UDUNITS-2 parseable -- before it, `beta` carried the
-    # placeholder "(salinity unit)-1", which no CF checker can read. xwmt runs fine
-    # against older xeos; it just cannot honestly promise CF-conformant metadata
-    # there. See hdrake/xeos#8.
-    "xeos[teos10] >= 0.2.1",
+    # >= 0.2.3 for metadata, not behaviour: xwmt defers to xeos for the attributes
+    # on `alpha`/`beta`/`rho` (see `xwmt.attrs.set_default_attrs`). 0.2.1 made
+    # those UDUNITS-2 parseable at all -- before it, `beta` carried the
+    # placeholder "(salinity unit)-1", which no CF checker can read
+    # (hdrake/xeos#8) -- and 0.2.3 made them *right*: `beta` had been labelled a
+    # plain dimensionless "1" for the practical-salinity backends and "kg g-1"
+    # for the absolute-salinity ones, two labels a factor of 1000 apart for
+    # backends returning the same numbers (hdrake/xeos#11). xwmt does not read
+    # those attributes -- it derives `U(alpha)`/`U(beta)` structurally, so it is
+    # correct against either -- but it should not pass on metadata it knows to be
+    # wrong. 0.2.3 also warns when an input's own `units` disagree with what the
+    # kernels expect (hdrake/xeos#12), which xwmt users get for free.
+    "xeos[teos10] >= 0.2.3",
     # Used directly by xwmt for pressure (`gsw.p_from_z`) and temperature/salinity
     # kind conversions (e.g. `gsw.CT_from_pt`, `gsw.SA_from_SP`).
     "gsw >= 3.4.0",

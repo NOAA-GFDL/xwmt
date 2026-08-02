@@ -28,6 +28,31 @@ from xeos.conventions import TemperatureKind, SalinityKind
 
 __all__ = ["list_eos", "resolve_eos", "convert_ts"]
 
+#: Units of the quantities `convert_ts` produces. A converted field is a
+#: *different quantity* from its inputs, and `xr.apply_ufunc` hands it the
+#: attributes of the first argument -- which for every gsw conversion here is
+#: absolute salinity, since that is the hub they are written around. Left alone,
+#: a potential temperature would therefore come back labelled "psu". Describing
+#: the output explicitly clears the leak and gives xeos >= 0.2.3's input-units
+#: check something true to check against.
+_CONVERTED_UNITS = {
+    TemperatureKind.CONSERVATIVE: {
+        "units": "degC",
+        "long_name": "conservative temperature",
+    },
+    TemperatureKind.POTENTIAL: {"units": "degC", "long_name": "potential temperature"},
+    SalinityKind.ABSOLUTE: {"units": "g kg-1", "long_name": "absolute salinity"},
+    # PSS-78 is dimensionless but scaled by 1e-3; see `xwmt.units`.
+    SalinityKind.PRACTICAL: {"units": "psu", "long_name": "practical salinity"},
+}
+
+
+def _described(da, kind):
+    """Replace whatever a conversion inherited with what it actually produced."""
+    da = da.copy()
+    da.attrs = dict(_CONVERTED_UNITS[kind])
+    return da
+
 
 def list_eos():
     """Return the sorted list of canonical EOS ids supported by ``xeos``."""
@@ -124,7 +149,12 @@ def convert_ts(t, s, eos, t_var, s_var, p, lon=None, lat=None):
                 _sa_box.append(s)
             else:
                 _sa_box.append(
-                    xr.apply_ufunc(gsw.SA_from_SP, s, p, lon, lat, dask="parallelized")
+                    _described(
+                        xr.apply_ufunc(
+                            gsw.SA_from_SP, s, p, lon, lat, dask="parallelized"
+                        ),
+                        SalinityKind.ABSOLUTE,
+                    )
                 )
         return _sa_box[0]
 
@@ -138,16 +168,27 @@ def convert_ts(t, s, eos, t_var, s_var, p, lon=None, lat=None):
         temp = t
     else:
         # Conservative temperature is the hub for temperature conversions.
+        # Every gsw conversion below takes absolute salinity first, so each
+        # result would otherwise inherit the salinity's attributes.
         if t_in is TemperatureKind.CONSERVATIVE:
             ct = t
         elif t_in is TemperatureKind.POTENTIAL:
-            ct = xr.apply_ufunc(gsw.CT_from_pt, _sa(), t, dask="parallelized")
+            ct = _described(
+                xr.apply_ufunc(gsw.CT_from_pt, _sa(), t, dask="parallelized"),
+                TemperatureKind.CONSERVATIVE,
+            )
         else:  # in-situ
-            ct = xr.apply_ufunc(gsw.CT_from_t, _sa(), t, p, dask="parallelized")
+            ct = _described(
+                xr.apply_ufunc(gsw.CT_from_t, _sa(), t, p, dask="parallelized"),
+                TemperatureKind.CONSERVATIVE,
+            )
         if t_out is TemperatureKind.CONSERVATIVE:
             temp = ct
         else:  # potential
-            temp = xr.apply_ufunc(gsw.pt_from_CT, _sa(), ct, dask="parallelized")
+            temp = _described(
+                xr.apply_ufunc(gsw.pt_from_CT, _sa(), ct, dask="parallelized"),
+                TemperatureKind.POTENTIAL,
+            )
 
     # Produce the salinity kind the EOS wants.
     if s_out is SalinityKind.ABSOLUTE:
@@ -155,6 +196,9 @@ def convert_ts(t, s, eos, t_var, s_var, p, lon=None, lat=None):
     elif s_in is SalinityKind.PRACTICAL:
         salt = s
     else:  # absolute -> practical
-        salt = xr.apply_ufunc(gsw.SP_from_SA, _sa(), p, lon, lat, dask="parallelized")
+        salt = _described(
+            xr.apply_ufunc(gsw.SP_from_SA, _sa(), p, lon, lat, dask="parallelized"),
+            SalinityKind.PRACTICAL,
+        )
 
     return temp, salt

@@ -205,11 +205,13 @@ Things that look dimensional and are not:
   horizontal reduction is a bare `.sum()` and `integrate=True` vs `False` is dimensionally a
   no-op.
 - `alpha`/`beta` units are **derived** as `U(θ)⁻¹`/`U(S)⁻¹`, never read from the arrays `xeos`
-  returns. xeos spells `beta`'s units per salinity kind, and before hdrake/xeos#11 the two
-  spellings were not even the same unit (`"1"` vs `"kg g-1"`) though every backend returns the
-  same magnitude — so reading the label made identical arithmetic emit units differing by 1000
-  depending on the caller's `eos=`. Deriving is immune to whatever xeos settles on, and covers
-  caller-supplied coefficients too. `test_attrs.py` pins it with a `teos10`/`jmd95` comparison.
+  returns. xeos spells `beta`'s units per salinity kind, and until xeos 0.2.3 the two spellings
+  were not even the same unit (`"1"` vs `"kg g-1"`) though every backend returns the same
+  magnitude — so reading the label made identical arithmetic emit units differing by 1000
+  depending on the caller's `eos=` (hdrake/xeos#11). The pin is now `>= 0.2.3`, but keep
+  deriving: it makes the result backend-independent by construction rather than by version pin,
+  and it is the only thing covering caller-supplied coefficients. `test_attrs.py` pins it with a
+  `teos10`/`jmd95` comparison.
 
 ## Tests
 
