@@ -99,6 +99,30 @@ _S_KIND = {
 }
 
 
+def _require_lonlat(lon, lat, s_from, s_to, eos):
+    """Raise if the practical<->absolute salinity conversion has no geographic position.
+
+    `gsw`'s salinity conversions take longitude and latitude, because absolute
+    salinity depends on the local composition of seawater. Without them `gsw`
+    fails deep inside `apply_ufunc` with a dtype-inference error that names
+    neither coordinate, so check up front and say what is missing and why.
+    """
+    missing = [name for name, value in (("lon", lon), ("lat", lat)) if value is None]
+    if not missing:
+        return
+    names = " and ".join(f"`{name}`" for name in missing)
+    plural = "s" if len(missing) > 1 else ""
+    verb = "are" if len(missing) > 1 else "is"
+    raise ValueError(
+        f"Converting {s_from} to {s_to} salinity requires the {names} "
+        f"coordinate{plural} on the dataset, which {verb} missing. This "
+        f"conversion happens because `s_var={s_from!r}` but the equation of "
+        f"state {eos.id!r} expects {s_to} salinity. Either add {names} to the "
+        f"dataset (1-D or 2-D fields both work), or choose an `eos=` that takes "
+        f"practical salinity directly, such as 'wright97-full' or 'jmd95'."
+    )
+
+
 def convert_ts(t, s, eos, t_var, s_var, p, lon=None, lat=None):
     """Convert ``(t, s)`` into the temperature/salinity kinds that ``eos`` expects.
 
@@ -148,6 +172,7 @@ def convert_ts(t, s, eos, t_var, s_var, p, lon=None, lat=None):
             if s_in is SalinityKind.ABSOLUTE:
                 _sa_box.append(s)
             else:
+                _require_lonlat(lon, lat, "practical", "absolute", eos)
                 _sa_box.append(
                     _described(
                         xr.apply_ufunc(
@@ -196,6 +221,7 @@ def convert_ts(t, s, eos, t_var, s_var, p, lon=None, lat=None):
     elif s_in is SalinityKind.PRACTICAL:
         salt = s
     else:  # absolute -> practical
+        _require_lonlat(lon, lat, "absolute", "practical", eos)
         salt = _described(
             xr.apply_ufunc(gsw.SP_from_SA, _sa(), p, lon, lat, dask="parallelized"),
             SalinityKind.PRACTICAL,

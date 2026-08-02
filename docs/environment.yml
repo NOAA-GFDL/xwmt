@@ -15,4 +15,10 @@ dependencies:
   - jupyter-sphinx
   - sphinx-book-theme
   - matplotlib
+  # Dask powers the lazy/chunked reads in the MOM6 and CMIP6 example notebooks;
+  # `ProgressBar` is imported directly by several of them.
+  - dask
+  # Cloud access for the CMIP6 example notebook (public Pangeo GCS zarr stores).
+  - gcsfs
+  - zarr
   - pip
