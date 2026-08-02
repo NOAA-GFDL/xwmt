@@ -37,11 +37,13 @@ convertibility". xwmt divides by that scale, so it has to keep it.
 The coefficients
 ----------------
 `alpha` and `beta` units are **derived** (`U(alpha) = U(theta)^-1`,
-`U(beta) = U(S)^-1`), never read from the arrays `xeos` returns. `xeos` labels
-`beta` as ``"1"`` for its practical-salinity backends and ``"kg g-1"`` for its
-absolute-salinity ones while returning values of the same magnitude (~7.2e-4 to
-~7.4e-4 across all of them), so reading the label would make xwmt's output
-depend on which equation of state the caller picked. Deriving structurally also
+`U(beta) = U(S)^-1`), never read from the arrays `xeos` returns. `xeos` spells
+`beta`'s units per salinity kind -- a bare multiplier for its practical-salinity
+backends, ``"kg g-1"`` for its absolute-salinity ones -- and before
+hdrake/xeos#11 those two spellings were not even the same unit, while every
+backend returned values of the same magnitude (~7.0e-4 to ~8.2e-4). Reading the
+label therefore made output depend on which equation of state the caller picked.
+Deriving structurally is immune to that whatever xeos settles on, and also
 covers a caller who supplies `alpha`/`beta` themselves.
 """
 
