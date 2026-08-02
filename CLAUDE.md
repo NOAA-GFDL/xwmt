@@ -42,9 +42,34 @@ black xwmt
 Note: `pytest` requires network access on first run — `conftest.py` downloads
 `xwmb_test_data_Baltic_3d.20230830.nc` from the GFDL FTP server into the working directory.
 
+## Development workflow
+
+Every branch / PR is developed in its **own git worktree** with its **own conda environment**, so
+that unrelated lines of work never share a checkout or a set of installed dependencies (the
+package's pins move fast enough — `xgcm`, `xbudget`, `xeos` — that a shared env silently goes stale
+against whichever branch you last installed).
+
+```bash
+# <slug> is the branch name, e.g. add-output-attributes
+git fetch upstream
+git worktree add ../wt-xwmt-<slug> -b <slug> upstream/main
+conda env create -n xwmt-<slug> -f ../wt-xwmt-<slug>/ci/environment.yml
+conda run -n xwmt-<slug> pip install -e ../wt-xwmt-<slug>
+```
+
+Conventions:
+- Worktree path `../wt-xwmt-<slug>`, conda env `xwmt-<slug>`.
+- Run tests, lint, and `gh pr create` from inside the worktree, using that env.
+- Symlink an already-downloaded `xwmb_test_data_Baltic_3d.20230830.nc` into the worktree rather
+  than re-fetching it from GFDL.
+- Tear both down once the branch merges:
+  `git worktree remove ../wt-xwmt-<slug> && conda env remove -n xwmt-<slug>`.
+- `upstream` is `NOAA-GFDL/xwmt` (the PR target) and `origin` is the `hdrake/xwmt` fork; local
+  `main` / `upstream/main` refs go stale quickly, so always `git fetch upstream` before branching.
+
 ## Architecture
 
-Three source modules under `xwmt/`, plus tests:
+Source modules under `xwmt/`, plus tests:
 
 - **`wm.py` — `WaterMass`**: the base class. Wraps an `xgcm.Grid` and handles all the
   *grid/thermodynamic* machinery that is independent of tendencies:
@@ -63,6 +88,50 @@ Three source modules under `xwmt/`, plus tests:
   - `add_gridcoords()` and `_rebuild_grid()` (module-level) reconstruct an `xgcm.Grid` from an
     existing one, preserving coords/metrics/boundary (and optionally adding more). `_rebuild_grid`
     is the single source of truth for grid reconstruction, used by both `__init__` and `add_gridcoords`.
+  - `infer_bins()` builds the bin edges used when a caller passes no `bins=`. Its two knobs are
+    independent and easy to conflate: `percentiles` bounds the *range* (as fractions in [0, 1],
+    despite the name), while `spacing` distributes the edges within it — `"linear"` (default,
+    equal-width bins) or `"quantiles"` (equal-population bins, at the quantiles
+    `np.linspace(*percentiles, nbins)`). Quantile spacing warns when a plateau in the field makes
+    edges repeat, since a zero-width bin divides by zero downstream. This is one of the few places
+    that deliberately breaks laziness — bin edges have to be concrete numbers — and it must hand
+    `np.linspace` plain floats, not the 0-d DataArrays `da.min()`/`da.max()` return.
+
+- **`attrs.py`**: the single source of truth for the CF-style metadata attached to xwmt output.
+  Pure functions returning attribute dicts; no xarray objects are built here.
+  - `units` is **derived per call**, not a constant — see `units.py` below and
+    `WaterMassTransformations._transformation_units`. With xbudget-conventional inputs every
+    rate is `"kg s-1"`; a tracer budget that never multiplies by a density is `"m3 s-1"`.
+    Both entry points agree, because xwmt never multiplies by cell area: `map_transformations`
+    returns totals *per grid cell*, not a flux density per m², which is a difference in what
+    is summed rather than in dimension.
+  - Units are UDUNITS-2 parseable (`"kg s-1"`, never `"kg/s"`), and `standard_name` is only set
+    where a real CF standard name exists — there is none for a WMT rate.
+  - Per-process prose stays out of xwmt: `long_name`s are generated mechanically from the term
+    key, and xbudget's own `provenance`/`xbudget_path`/`xbudget_op` are propagated verbatim.
+  - Two complementary guards: `set_default_attrs` never overwrites what an upstream package set
+    (`xeos` annotates `alpha`/`beta`/`rho`), while `strip_inherited_attrs` clears attributes that
+    leaked in through arithmetic from an *input* field (`_SAMPLING_ATTRS` always; `_IDENTITY_ATTRS`
+    unless the caller passes `identity=False`). Both are needed: "don't overwrite" alone leaves
+    `p` (dbar) reporting `units: "m"`, `standard_name: "cell_thickness"` from its thickness input.
+  - `netcdf_safe` flattens xbudget's mixed str/float `provenance` lists, which are otherwise not
+    netCDF-serializable.
+
+- **`units.py`**: a thin, fail-soft layer over `cf_units` (which arrives with `xbudget >= 0.8.0`),
+  not an algebra of its own. It owns three things cf-units cannot give: the `psu` alias, the
+  spelling of emitted strings, and the units of xwmt's own `cp`/`rho_ref` arguments.
+  - Pure and total — `parse` returns `None` rather than raising, and unknown *propagates*
+    through every operation rather than becoming a fabricated dimension. Same contract as
+    `xbudget.units`, deliberately.
+  - **`psu` is aliased to `"0.001"`**, i.e. dimensionless-with-a-scale, which cf-units agrees is
+    the same unit as `g kg-1`. This is what the `×1000` in `datadict` pairs with. `xbudget`
+    aliases `psu` to `"1"` instead; that is not a disagreement — xbudget only checks
+    *convertibility* and says outright that it discards the residual 1e-3, which is exactly the
+    factor xwmt divides by.
+  - `format_units` rewrites cf-units' `.` separator to a space, but must not touch the decimal
+    point of a leading numeric scale (`"0.001"` is not `"0 001"`).
+  - `scale(unit, factor)` exists so that the direction is stated once: multiplying an array's
+    *values* by 1000 divides its *units* by 1000.
 
 - **`compute.py`**: small functional helpers for converting interfacial fluxes (`Jlam`) or
   layer-integrated tendencies into `hlamdot` — the **vertically-extensive tracer tendency**
@@ -75,6 +144,12 @@ Three source modules under `xwmt/`, plus tests:
   and tendency "processes" → dataset variable names. The constructor argument was called
   `xbudget_dict` before xbudget 0.7.0 renamed the concept; that keyword (and the
   `.xbudget_dict` attribute) still work but emit a `FutureWarning`.
+  Not every top-level recipe key is a budget: xbudget 0.8.0 added a reserved `constants`
+  table beside them. Walk budgets with `_budget_names(recipe)`, never `recipe.keys()`, or
+  the table gets read as a tracer. It is matched by name (`_RESERVED_RECIPE_KEYS`) rather
+  than imported from `xbudget.parse.CONSTANTS_KEY`, which does not exist before 0.8.0.
+  `_budget_names` also preserves recipe order, which is what makes process order — and so
+  the merge order and output metadata — reproducible.
 
 ### Key data flow in `wmt.py`
 
@@ -106,12 +181,37 @@ the ones actually present in the dataset.
 
 ### Sign conventions & units (easy to get wrong)
 
-- Salt tendencies are multiplied by 1000 (kg→g) in `datadict`.
 - `transformations_from_hlamdot` negates the transformed tendency (`-transformed_hlamdot`):
   transformation is defined as convergence into a layer.
-- Density tendencies are scaled by `rho_ref` (Boussinesq assumption — see the inline
-  "Is this correct for non-boussinesq case?" note in `calc_hlamdot_and_lambda`).
-- Heat tendencies are divided by `cp` (specific heat) to get a temperature-like tendency.
+
+**The pipeline has exactly six dimensional operations, and nothing else.** This table is the
+drift check for `_transformation_units`, which mirrors it step for step — if you add a factor
+to the numerics, it belongs here and there:
+
+| site | operation | units factor |
+|---|---|---|
+| `datadict` | `tend_arr * 1000.0`, salt only (kg→g) | units **÷ 1000** |
+| `calc_hlamdot_and_lambda` | heat branch `/ self.cp` | ÷ `J kg-1 degC-1` |
+| `rho_tend` | heat: `-(alpha/cp) * heat_tend` | × `U(θ)⁻¹`, ÷ `J kg-1 degC-1` |
+| `rho_tend` | salt: `beta * salt_tend` | × `U(S)⁻¹` |
+| `calc_hlamdot_and_lambda` | density branch `* self.rho_ref` (Boussinesq — see the inline "Is this correct for non-boussinesq case?" note) | × `kg m-3` |
+| `_transform_one` | `transformed / np.diff(bin_bounds)` | ÷ lambda units |
+
+Things that look dimensional and are not:
+
+- `compute.hlamdot_from_Jlam` divides by `h` and multiplies straight back by it — the thickness
+  cancels exactly. It is a NaN/zero-thickness mask, not a metric.
+- **xwmt never multiplies by cell area.** xbudget bakes `areacello` into every tendency, so the
+  horizontal reduction is a bare `.sum()` and `integrate=True` vs `False` is dimensionally a
+  no-op.
+- `alpha`/`beta` units are **derived** as `U(θ)⁻¹`/`U(S)⁻¹`, never read from the arrays `xeos`
+  returns. xeos spells `beta`'s units per salinity kind, and until xeos 0.2.3 the two spellings
+  were not even the same unit (`"1"` vs `"kg g-1"`) though every backend returns the same
+  magnitude — so reading the label made identical arithmetic emit units differing by 1000
+  depending on the caller's `eos=` (hdrake/xeos#11). The pin is now `>= 0.2.3`, but keep
+  deriving: it makes the result backend-independent by construction rather than by version pin,
+  and it is the only thing covering caller-supplied coefficients. `test_attrs.py` pins it with a
+  `teos10`/`jmd95` comparison.
 
 ## Tests
 
@@ -125,9 +225,32 @@ the ones actually present in the dataset.
 - `test_bugfixes.py` — fast unit/regression tests on a tiny synthetic grid (no data download)
   that pin previously-broken paths (input validation, constructor mask, prebinned method
   non-mutation, grid non-mutation).
+- `test_attrs.py` — pins the output metadata: units, sign convention, `cell_methods`, CF bin
+  bounds, xbudget provenance passthrough, netCDF round-trip, and — just as important — that no
+  input attribute leaks into a derived field. Mostly synthetic (no download); two tests use the
+  Baltic fixture, since only real MOM6 output carries the attributes that can leak.
+- `test_units.py` — fast synthetic tests (no download) for `units.py` in isolation: parse/format
+  round-trips, the `psu` alias and its 1e-3 scale, unknown propagation, and the three pipeline
+  formulas written out by hand. A failure here is a units bug; a failure in `test_attrs.py`'s
+  units tests is a wiring bug. Also cross-checks every emitted string against UDUNITS-2 via
+  `pytest.importorskip("cf_units")`, matching the convention in the sibling `xeos` package.
+- `test_infer_bins.py` — fast synthetic tests (no download) for the `bins=None` fallback: that it
+  works at all (it used to raise for *every* caller who omitted `bins=`, which the rest of the
+  suite missed because the functional tests all pass `bins=` explicitly), and that `percentiles`
+  (range) and `spacing` (distribution of edges) stay distinct. Uses a deliberately skewed field,
+  since linear and quantile spacing coincide on uniform data.
+- `test_recipe_shape.py` — fast synthetic tests (no download) for how the *shape* of the recipe
+  is read: that xbudget's reserved top-level `constants` table is skipped rather than taken for a
+  tracer, and that process order (hence variable order and the global attrs) is fixed by the
+  recipe rather than the interpreter's hash seed. Recipes are hand-built, so these mean the same
+  thing on xbudget 0.7.0 and 0.8.0. The hash-seed test shells out to a subprocess, since
+  `PYTHONHASHSEED` is read once at interpreter startup.
 - Baltic test data is fetched by the `baltic_dataset_path` / `baltic_grid_and_budgets` session
   fixtures in `conftest.py` (HTTPS-first, checksum-pinned, skips cleanly when offline). `*.nc`
   is gitignored. The pinned `DATA_SHA256` must be updated if the dataset is intentionally changed.
+  The fixture labels `areacello` with `units="m2"`, which the published file omits: xbudget
+  multiplies it into every tendency, so without it xbudget can infer units for only 6 of 57
+  terms and xwmt has nothing to derive from. Do not drop that line.
 
 ## Versioning
 
@@ -158,10 +281,15 @@ Consequences worth remembering when editing:
 
 - Everything stays **lazy/dask-friendly**: computations use `xr.apply_ufunc(..., dask="parallelized")`
   and avoid forcing computation. Preserve laziness when editing.
-- Derived state (`p`, `sa`, `ct`, `alpha`, `beta`, density, `z`, `z_interface`, `{h}_i`) is
+- Derived state (`p`, `alpha`, `beta`, density, `z`, `z_interface`, `{h}_i`) is
   accumulated onto the WaterMass's **own deep copy** `self.grid._ds`; the caller's grid is never
   mutated. Many methods are idempotent via `if "<var>" not in self.grid._ds` guards. (A future
   major version may move this derived state off `grid._ds` entirely — see the review notes.)
+- Anything xwmt writes to `grid._ds` or returns to the user goes through `xwmt.attrs`, via
+  `WaterMass._describe_derived` for intermediate fields and via
+  `WaterMassTransformations._annotate_*` for output. Note `z`/`z_interface` are **heights**
+  (0 at the free surface, negative at depth, `positive: "up"`), which is the convention
+  `gsw.p_from_z` expects — not depths, despite the method name `_compute_depth_coordinates`.
 - `Z_metrics` (center/interface thickness) lives on the `WaterMass` **instance** as
   `self.Z_metrics`, not on the `xgcm.Grid`. Grid reconstruction goes through `_rebuild_grid`.
 - Use the coordinate-name properties (`self._zc`, `self._zi`, `self._xc`, `self._yc`,

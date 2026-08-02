@@ -4,6 +4,7 @@ import xgcm
 import gsw
 import warnings
 
+from xwmt import attrs as _attrs
 from xwmt.eos import resolve_eos, convert_ts
 
 # Sentinel for the `eos` default, so an explicitly-passed `eos` (even the string
@@ -146,6 +147,10 @@ class WaterMass:
             self.grid._ds["z_i"] = xr.DataArray([0, 1.0], dims=("z_i",))
             self.grid._ds[f"{self.h_name}"] = xr.DataArray([1], dims=("z_l",))
             self.grid._ds[f"{self.h_name}_i"] = xr.DataArray([0.5, 0.5], dims=("z_i",))
+            for name in (self.h_name, f"{self.h_name}_i"):
+                self.grid._ds[name].attrs.update(
+                    _attrs.synthetic_thickness_attrs(name.endswith("_i"))
+                )
             self.grid = _rebuild_grid(
                 self.grid,
                 extra_coords={"Z": {"center": "z_l", "outer": "z_i"}},
@@ -183,6 +188,10 @@ class WaterMass:
             self.grid._ds.time.attrs = (
                 time_attrs  # For some reason these are not preserved by default
             )
+        self._describe_derived(
+            f"{self.h_name}_i",
+            _attrs.thickness_interface_attrs(self.grid._ds.get(self.h_name)),
+        )
 
     def _pressure_from_height(self, z):
         """Sea pressure [dbar] at height `z` [m], negative below the sea surface.
@@ -192,6 +201,14 @@ class WaterMass:
         and which needs no latitude. With `gravity="gsw"` it defers to
         `gsw.p_from_z`, whose gravity varies with latitude and which therefore
         requires a `lat` coordinate.
+
+        The result is described here rather than at the call sites, because both
+        branches otherwise hand back a borrowed label: `apply_ufunc` takes its
+        attributes from the first argument, which for the reference pressure is a
+        bare scalar depth, leaving `lat`'s "degrees_north" on a pressure; and the
+        Boussinesq branch is arithmetic on `z`, which carries "m". A pressure fed
+        to the EOS mislabelled as a length or a latitude is exactly what
+        `xeos >= 0.2.3` warns about.
         """
         if self.gravity == "gsw":
             if "lat" not in self.grid._ds:
@@ -201,14 +218,18 @@ class WaterMass:
                     "on the dataset, which is missing. Either add one (see "
                     "`xwmt.add_gridcoords`) or use a constant `gravity=` instead."
                 )
-            return xr.apply_ufunc(
+            p = xr.apply_ufunc(
                 gsw.p_from_z, z, self.grid._ds.lat, 0, 0, dask="parallelized"
             )
-        # 1 dbar = 1e4 Pa.
-        return self.rho_ref * self.gravity * (-z) * 1e-4
+        else:
+            # 1 dbar = 1e4 Pa.
+            p = self.rho_ref * self.gravity * (-z) * 1e-4
+        if isinstance(p, xr.DataArray):
+            p.attrs = _attrs.pressure_attrs(self.gravity)
+        return p
 
     def _compute_depth_coordinates(self):
-        """Compute layer-center depth `z` and interface depth `z_interface` from Z_metrics."""
+        """Compute layer-center height `z` and interface height `z_interface` from Z_metrics."""
         self.grid._ds["z"] = (-self.grid.cumsum(self.Z_metrics["outer"], "Z")).chunk(
             {self._zc: -1}
         )
@@ -218,6 +239,29 @@ class WaterMass:
             -self.grid.cumsum(self.Z_metrics["center"], "Z", to="outer"),
             0.0,
         ).chunk({self._zi: -1})
+        for name in ("z", "z_interface"):
+            self._describe_derived(name, _attrs.derived_field_attrs(name))
+
+    def _describe_derived(self, name, attrs, keep=()):
+        """
+        Describe a field that xwmt derived onto its own copy of the dataset.
+
+        Fields built by arithmetic inherit the attributes of whichever input
+        xarray took them from -- left alone, the pressure field `p` reports the
+        layer thickness's "Cell Thickness" in metres. Everything inherited is
+        cleared before xwmt's own attributes are applied.
+
+        `keep` names the attributes an upstream package set deliberately and
+        which therefore survive -- `xeos` describes the `alpha`, `beta` and
+        density arrays it returns better than xwmt could. It is an allowlist
+        because a blocklist can only ever exclude the leaks somebody remembered;
+        see :func:`xwmt.attrs.strip_inherited_attrs`.
+        """
+        if name not in self.grid._ds:
+            return
+        da = self.grid._ds[name]
+        _attrs.strip_inherited_attrs(da, keep=keep)
+        _attrs.set_default_attrs(da, attrs)
 
     @property
     def _xc(self):
@@ -323,6 +367,7 @@ class WaterMass:
         # temperature/salinity kind conversions.
         if "p" not in self.grid._ds.data_vars:
             self.grid._ds["p"] = self._pressure_from_height(self.grid._ds.z)
+            self._describe_derived("p", _attrs.pressure_attrs(self.gravity))
 
         # `p_ref` is the pressure at which alpha/beta are evaluated; `p_density` is
         # the pressure at which the density variable itself is evaluated. For "rho"
@@ -361,10 +406,19 @@ class WaterMass:
 
         # Thermal expansion coefficient alpha and haline contraction coefficient beta
         # at the reference pressure (unless supplied by the caller).
+        # Only fields xwmt computed here are re-described: a caller-supplied alpha,
+        # beta or density comes with whatever metadata its author intended, and it
+        # is not xwmt's to strip.
         if not self._user_alpha:
             self.grid._ds["alpha"] = self.eos.alpha(temp, salt, p_ref)
+            # The EOS backend describes what it returns better than xwmt could,
+            # but only for the keys it actually sets: `units` and `long_name`.
+            # It sets no `standard_name` on a coefficient, so one found there
+            # leaked in from the input temperature.
+            self._describe_derived("alpha", {}, keep=_attrs.EOS_COEFFICIENT_ATTRS)
         if not self._user_beta:
             self.grid._ds["beta"] = self.eos.beta(temp, salt, p_ref)
+            self._describe_derived("beta", {}, keep=_attrs.EOS_COEFFICIENT_ATTRS)
 
         # Density (kg/m^3): in-situ for "rho", potential-density anomaly for "sigmaX".
         if density_name not in self.grid._ds:
@@ -385,6 +439,14 @@ class WaterMass:
                     "units": "kg m-3",
                 }
             self.grid._ds[density_name] = density.rename(density_name)
+            # Subtracting 1000 drops the EOS backend's attributes, and they would
+            # describe an in-situ density rather than a potential density anomaly
+            # anyway, so xwmt owns the sigmaX metadata but defers on "rho".
+            self._describe_derived(
+                density_name,
+                _attrs.derived_field_attrs(density_name),
+                keep=_attrs.EOS_DENSITY_ATTRS if density_name == "rho" else (),
+            )
 
         return self.grid._ds[density_name]
 
@@ -507,31 +569,94 @@ class WaterMass:
             0.0,
         )
 
-    def infer_bins(self, da, percentiles=[0.0, 1.0], nbins=100, surface=False):
+    def infer_bins(
+        self, da, percentiles=(0.0, 1.0), nbins=100, surface=False, spacing="linear"
+    ):
         """
-        Specify bins based on the distribution of `da`, excluding outliers.
+        Infer bin edges from the distribution of `da`.
+
+        The two arguments do separate jobs: `percentiles` fixes where the bins
+        *start and end*, and `spacing` fixes how the edges are distributed
+        *between* those endpoints.
 
         Parameters
         ----------
         da: xarray.DataArray
             Variable used to determine bins.
-        percentiles: list
-            List of length 2 containing the upper and lower percentiles to bound the array of bins.
-            Default: [0., 1.], i.e. min and max.
+        percentiles: sequence of float
+            Length-2 sequence giving the lower and upper quantiles that bound the
+            bins, as fractions in [0, 1] (not 0-100, despite the name, which is
+            kept for backwards compatibility). Default: (0., 1.), i.e. the min and
+            max of `da`. Use e.g. (0.01, 0.99) to keep outliers from stretching the
+            range. Note this only bounds the range; on its own it says nothing
+            about how the edges in between are spaced.
         nbins: int
-            Number of bins. Default: 100.
+            Number of bin edges, so `nbins - 1` bins. Default: 100.
         surface: bool
-            Default: False. If True, compute percentiles only from the outcropping layer of `da`.
+            Default: False. If True, infer bins only from the outcropping layer of `da`.
+        spacing: {"linear", "quantiles"}
+            How to distribute the edges across the range. Default: "linear",
+            equally spaced in the value of `da` -- bins of equal width, holding
+            unequal amounts of water. "quantiles" instead places the edges at the
+            quantiles `np.linspace(*percentiles, nbins)` of `da`, giving bins that
+            each hold roughly the same number of grid cells and so resolve
+            whichever range of lambda the water actually occupies. The two agree
+            when `da` is uniformly distributed.
+
+        Returns
+        -------
+        numpy.ndarray
+            `nbins` bin edges, increasing.
+
+        Notes
+        -----
+        Bin edges have to be concrete numbers, so this is one of the few places
+        that forces computation of a lazy `da`. Pass `bins=` explicitly to keep a
+        pipeline fully lazy.
         """
+        if spacing not in ("linear", "quantiles"):
+            raise ValueError(
+                f"`spacing` must be 'linear' or 'quantiles', got {spacing!r}."
+            )
+        if len(percentiles) != 2:
+            raise ValueError(
+                f"`percentiles` must have length 2, got {len(percentiles)}."
+            )
+        lower, upper = (float(p) for p in percentiles)
+        if not 0.0 <= lower < upper <= 1.0:
+            raise ValueError(
+                f"`percentiles` must be increasing fractions within [0, 1], got "
+                f"{tuple(percentiles)!r}."
+            )
+
         if surface:
             da = self.sel_outcrop_lev(da)
-        if percentiles != [0.0, 1.0]:
-            vmin, vmax = da.quantile(percentiles, dim=da.dims)
+
+        if spacing == "quantiles":
+            edges = da.quantile(np.linspace(lower, upper, nbins), dim=da.dims)
+            edges = np.asarray(edges, dtype=float)
+            # Quantiles of a field with plateaus (a masked basin, a well-mixed
+            # layer) can repeat, and a zero-width bin divides by zero downstream.
+            # Say so rather than returning silently degenerate bins.
+            if np.any(np.diff(edges) == 0.0):
+                warnings.warn(
+                    f"`spacing='quantiles'` produced repeated bin edges for "
+                    f"'{da.name}': its distribution is too concentrated to split "
+                    f"into {nbins - 1} equally populated bins. The resulting "
+                    f"zero-width bins will give infinite or undefined "
+                    f"transformation rates; use fewer bins or spacing='linear'."
+                )
+            return edges
+
+        if (lower, upper) != (0.0, 1.0):
+            vmin, vmax = da.quantile([lower, upper], dim=da.dims)
         else:
             vmin, vmax = da.min(), da.max()
         # `da.min()`/`da.quantile()` return 0-d DataArrays, which `np.linspace`
-        # rejects; coerce to plain floats so a DataArray (the documented input)
-        # works, and so `percentiles` is reachable at all.
+        # rejects -- it tries to wrap its 1-D output back into a 0-d DataArray and
+        # raises. `float()` both computes the lazy result and hands numpy plain
+        # scalars, so a DataArray (the documented input) works and `percentiles`
+        # is reachable at all.
         return np.linspace(float(vmin), float(vmax), nbins)
 
 

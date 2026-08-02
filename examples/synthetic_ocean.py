@@ -145,6 +145,35 @@ def make_idealized_basin(nx=40, ny=40, nz=30):
         -np.diff(flux_i, axis=0) * area[np.newaxis, :, :],
     )
 
+    # -- Label everything. ----------------------------------------------------
+    # Real model output carries `units`, and xwmt reads them: it derives the
+    # units of the transformation rates it returns from the units of the tendency
+    # and of the lambda, rather than assuming. An unlabelled input is not an
+    # error -- xwmt omits the `units` attribute rather than guess -- but it does
+    # mean the output cannot describe itself, and it warns to say so. A synthetic
+    # dataset standing in for a model should behave like one.
+    #
+    # Salinity is labelled `g kg-1` rather than "psu" because the default
+    # `s_var="absolute"` declares these to be absolute salinities. The two are the
+    # same unit in any case: PSS-78 is dimensionless with a scale of 1e-3.
+    labels = {
+        "areacello": ("m2", "cell area"),
+        "thkcello": ("m", "cell thickness"),
+        "thetao": ("degC", "sea water conservative temperature"),
+        "so": ("g kg-1", "sea water absolute salinity"),
+        "hfds": ("W m-2", "downward heat flux at the sea surface"),
+        "wfo": ("kg m-2 s-1", "downward freshwater flux at the sea surface"),
+        "heat_tendency_surface": ("W", "heat tendency due to surface fluxes"),
+        "salt_tendency_surface": ("kg s-1", "salt tendency due to surface fluxes"),
+        "heat_tendency_diffusion": ("W", "heat tendency due to vertical diffusion"),
+    }
+    for name, (unit, long_name) in labels.items():
+        ds[name].attrs.update({"units": unit, "long_name": long_name})
+    ds["lon"].attrs["units"] = "degrees_east"
+    ds["lat"].attrs["units"] = "degrees_north"
+    ds["z_l"].attrs.update({"units": "m", "long_name": "depth of cell centers"})
+    ds["z_i"].attrs.update({"units": "m", "long_name": "depth of cell interfaces"})
+
     grid = xgcm.Grid(
         ds,
         coords={

@@ -27,7 +27,20 @@ classifiers = [
 dependencies = [
     # Equations of state are delegated to `xeos`, which vendors the JMD95/Wright/
     # UNESCO/MDJWF/Roquet/MPAS kernels as pure-numpy and pulls in `gsw` for TEOS-10.
-    "xeos[teos10] >= 0.1.0",
+    #
+    # >= 0.2.3 for metadata, not behaviour: xwmt defers to xeos for the attributes
+    # on `alpha`/`beta`/`rho` (see `xwmt.attrs.set_default_attrs`). 0.2.1 made
+    # those UDUNITS-2 parseable at all -- before it, `beta` carried the
+    # placeholder "(salinity unit)-1", which no CF checker can read
+    # (hdrake/xeos#8) -- and 0.2.3 made them *right*: `beta` had been labelled a
+    # plain dimensionless "1" for the practical-salinity backends and "kg g-1"
+    # for the absolute-salinity ones, two labels a factor of 1000 apart for
+    # backends returning the same numbers (hdrake/xeos#11). xwmt does not read
+    # those attributes -- it derives `U(alpha)`/`U(beta)` structurally, so it is
+    # correct against either -- but it should not pass on metadata it knows to be
+    # wrong. 0.2.3 also warns when an input's own `units` disagree with what the
+    # kernels expect (hdrake/xeos#12), which xwmt users get for free.
+    "xeos[teos10] >= 0.2.3",
     # Used directly by xwmt for pressure (`gsw.p_from_z`) and temperature/salinity
     # kind conversions (e.g. `gsw.CT_from_pt`, `gsw.SA_from_SP`).
     "gsw >= 3.4.0",
@@ -41,7 +54,14 @@ dependencies = [
     # 0.7.0 removed the old top-level `aggregate()`/`flatten_lol`; xwmt's
     # test/example flow uses `collect_budgets` + `BudgetQuery(...).aggregate()`
     # instead. See the xbudget 0.7 CHANGELOG.
-    "xbudget >= 0.7.0",
+    #
+    # >= 0.8.0 for metadata, not behaviour: xwmt derives the `units` of its
+    # output from its inputs (see `xwmt.units`), and 0.8.0 is where xbudget
+    # began inferring and stamping `units` onto the terms it materializes and
+    # declaring budget-level units in its presets. Against 0.7.0 there is
+    # nothing to derive from and every rate goes out unlabelled. 0.8.0 also
+    # brings `cf-units`, which is what xwmt does the unit algebra with.
+    "xbudget >= 0.8.0",
 ]
 
 [project.optional-dependencies]

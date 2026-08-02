@@ -4,8 +4,33 @@ import xarray as xr
 from xhistogram.xarray import histogram
 import warnings
 
+from xwmt import attrs as _attrs
+from xwmt import units as _units
 from xwmt.wm import WaterMass, _EOS_UNSET
 from xwmt.compute import calc_hlamdot_tendency
+
+# Private coordinate attribute used to carry the resolved lambda bin edges from
+# `transform_hlamdot_term` (which returns a DataArray, and so cannot hold a
+# 2D bounds coordinate) up to `transformations_from_hlamdot` (which returns a
+# Dataset, and materializes them as a CF `bounds` variable).
+_BIN_EDGES_ATTR = "xwmt_bin_edges"
+
+# Top-level recipe keys that are not budgets. xbudget 0.8.0 added a reserved
+# `constants` table holding scalars shared across a recipe (a reference density,
+# a heat capacity); it sits beside the budgets but is not one, and every shipped
+# 0.8.0 preset has it. Matched by name rather than imported from
+# `xbudget.parse.CONSTANTS_KEY`, which does not exist before 0.8.0 and is not
+# public in it either — so the name is the only thing stable across both.
+_RESERVED_RECIPE_KEYS = frozenset({"constants"})
+
+
+def _budget_names(recipe):
+    """The recipe's budget keys, in recipe order, skipping reserved non-budgets.
+
+    Recipe order (rather than, say, a set) is deliberate: it decides the order
+    terms are merged in, and so has to be reproducible from run to run.
+    """
+    return [k for k in recipe if k not in _RESERVED_RECIPE_KEYS]
 
 
 def flatten_lol(lol):
@@ -197,7 +222,7 @@ class WaterMassTransformations(WaterMass):
         # BudgetQuery), so this single accessor works whether `recipe` is a
         # raw recipe or an aggregated dict.
         self.tracer_dict = {}
-        tracers = [k for k in recipe.keys() if k != "mass"]
+        tracers = [k for k in _budget_names(recipe) if k != "mass"]
         for tracer in tracers:
             lam = self._budget_metadata(recipe, tracer, ("lambda", "surface_lambda"))
             if lam is self._UNSET:
@@ -239,8 +264,16 @@ class WaterMassTransformations(WaterMass):
                 **{"density": ["sigma0", "sigma1", "sigma2", "sigma3", "sigma4"]},
             }
 
+        # `constants` (and any future reserved key) is kept in `self.recipe` so the
+        # recipe round-trips faithfully, but it has no `lhs`/`rhs` and is not a budget,
+        # so it gets no `processes_*_dict` and is skipped everywhere budgets are walked.
+        # Names of rates whose units could not be derived, accumulated over one
+        # `transformations_from_hlamdot` call and reported once at the end.
+        self._undescribed_units = set()
+
         self.recipe = copy.deepcopy(recipe)
-        for term, bdict in self.recipe.items():
+        for term in _budget_names(self.recipe):
+            bdict = self.recipe[term]
             setattr(self, f"processes_{term}_dict", {})
             for ptype, _processes in bdict.items():
                 if ptype in ["lhs", "rhs"]:
@@ -396,6 +429,171 @@ class WaterMassTransformations(WaterMass):
         tracer_name = self.tracer_dict.get(tracer, None)
         return (tracer_name, process)
 
+    def source_arrays(self, term, tracers):
+        """
+        The xbudget tendency arrays underlying a process `term`, keyed by variable name.
+
+        A density transformation is driven by both the heat and the salt tendency,
+        so `tracers` may name more than one budget. Tendencies that the recipe does
+        not define, or that are absent from the dataset, are simply omitted.
+
+        Used to propagate the metadata that xbudget stamped onto its own output
+        (`provenance`, `xbudget_path`, `xbudget_op`) through to the transformation
+        rates derived from it.
+
+        Parameters
+        ----------
+        term : str
+            key for tendency variable in the recipe
+        tracers : iterable of str
+            Budgets to look the term up in, e.g. `["heat", "salt"]`.
+
+        Returns
+        -------
+        dict of {str: xr.DataArray}
+        """
+        sources = {}
+        for tracer in tracers:
+            if tracer not in self.tracer_dict:
+                continue
+            _, process = self.process_names(tracer, term)
+            if process is not None and process in self.grid._ds:
+                sources[process] = self.grid._ds[process]
+        return sources
+
+    def _tendency_units(self, tracer, term):
+        """Units of the tendency driving `term` in the `tracer` budget.
+
+        Returns `(cf_units.Unit or None, source)`, where `source` names which of
+        the two authorities answered -- it is stamped on the output as
+        `xwmt_units_source` so a reader can tell a units string derived from the
+        data apart from one taken on the recipe author's word.
+
+        Precedence:
+
+        1. The tendency variable's own `units`. xbudget >= 0.8.0 infers and
+           stamps this for every term it materializes, so this is the usual
+           answer; it is also what a hand-built recipe pointing straight at a
+           model diagnostic gives.
+        2. The budget-level `units` declared in the recipe (xbudget's presets
+           declare `heat: "W"`, `salt: "kg s-1"`, `mass: "kg s-1"`, and
+           `BudgetQuery.aggregate` carries the key through). A declaration by
+           the recipe author, not a guess by xwmt.
+
+        Anything else is unknown, and stays unknown -- see
+        `transformations_from_hlamdot`.
+        """
+        _, process = self.process_names(tracer, term)
+        if process is not None and process in self.grid._ds:
+            parsed = _units.parse(self.grid._ds[process].attrs.get("units"))
+            if parsed is not None:
+                return parsed, "tendency"
+        declared = self._budget_metadata(self.recipe, tracer, ("units",))
+        if declared is not self._UNSET:
+            parsed = _units.parse(declared)
+            if parsed is not None:
+                return parsed, "recipe"
+        return None, "unknown"
+
+    def _lambda_units(self, lam_var):
+        """Units of the lambda field, i.e. of the bin width the rates are divided by.
+
+        Deliberately routed through the same `lambda_coord_attrs` call that
+        `_annotate_lambda_coord` uses, including its `_LAMBDA_UNITS` fallback for
+        the densities xwmt derives itself. The units xwmt *divides* by can then
+        never disagree with the units it *labels the bin axis* with.
+        """
+        source = self.grid._ds.get(lam_var)
+        return _units.parse(_attrs.lambda_coord_attrs(lam_var, source).get("units"))
+
+    def _transformation_units(self, lambda_name, term, component):
+        """Units of one transformation rate, derived rather than assumed.
+
+        Mirrors the dimensional operations in `datadict`,
+        `calc_hlamdot_and_lambda`, `rho_tend` and `_transform_one` step for
+        step; each line names the site it mirrors, because the two must not
+        drift apart. Every other operation in the pipeline is dimensionless: the
+        thickness in `compute.hlamdot_from_Jlam` divides in and multiplies
+        straight back out, the horizontal reduction is a bare sum (xbudget has
+        already multiplied cell area into the tendency), and the sign flip in
+        `transformations_from_hlamdot` is a sign.
+
+        Returns `(units string or None, source)`.
+        """
+        lam_var = self.get_lambda_var(lambda_name)
+
+        if self._is_density_lambda(lambda_name):
+            # A density transformation is built from one tracer budget per
+            # component, then scaled to a density tendency.
+            tracer = component
+            if tracer not in self._COMPONENTS:
+                return None, "unknown"
+        else:
+            tracer = lambda_name
+
+        tendency, source = self._tendency_units(tracer, term)
+        if tendency is None:
+            return None, source
+
+        if tracer == "salt":
+            # mirrors `datadict`: values x1000 restates kg of salt as grams
+            hlamdot = _units.scale(tendency, 1000.0)
+        elif tracer == "heat":
+            # mirrors `calc_hlamdot_and_lambda`/`rho_tend`: / cp
+            hlamdot = _units.divide(tendency, _units.parse(_units.CP_UNITS))
+        else:
+            # mirrors the generic-tracer branch: no conversion at all
+            hlamdot = tendency
+
+        if self._is_density_lambda(lambda_name):
+            # mirrors `rho_tend`: x alpha (heat) or x beta (salt). Their units
+            # are the reciprocal of the tracer they differentiate with respect
+            # to, derived structurally rather than read off the arrays -- see
+            # the `xwmt.units` module docstring.
+            coefficient = _units.reciprocal(
+                self._lambda_units(self.get_lambda_var(tracer))
+            )
+            # mirrors `calc_hlamdot_and_lambda`: x rho_ref
+            hlamdot = _units.multiply(
+                hlamdot, coefficient, _units.parse(_units.RHO_REF_UNITS)
+            )
+
+        # mirrors `_transform_one`: / the lambda bin width
+        rate = _units.divide(hlamdot, self._lambda_units(lam_var))
+        if rate is None:
+            return None, "unknown"
+        return _units.format_units(rate), source
+
+    def _is_density_lambda(self, lambda_name):
+        """Whether `lambda_name` is one of the density lambdas (sigma0...sigma4)."""
+        density_lambdas = self.lambdas("density")
+        return density_lambdas is not None and lambda_name in density_lambdas
+
+    def _prebinned(self, lam_var):
+        """
+        Whether `lam_var` is already a vertical coordinate of the grid, in which case
+        the data need not be re-binned (unless `self.rebin`).
+        """
+        return all(
+            (c in self.grid.axes["Z"].coords.values())
+            for c in [f"{lam_var}_l", f"{lam_var}_i"]
+        )
+
+    def _resolve_method(self, lam_var, integrate):
+        """
+        The transformation backend actually used for a given lambda and `integrate`.
+
+        This is not always `self.method`: "default" picks a backend based on
+        `integrate`, and a prebinned target forces "xgcm" regardless. Resolving it
+        here (rather than mutating `self.method`) keeps the choice local to the
+        call and lets it be reported in the output metadata.
+        """
+        if self._prebinned(lam_var) and not self.rebin:
+            return "xgcm"
+        if self.method == "default":
+            return "xhistogram" if integrate else "xgcm"
+        return self.method
+
     def available_processes(self, available=True):
         """
         Get a list of all tendency processes that are both specified by `recipe` and available in
@@ -414,9 +612,16 @@ class WaterMassTransformations(WaterMass):
         >>> processes = wmt.available_processes()
         ['diffusion']
         """
-        processes = set()
-        for tracer in self.recipe.keys():
-            processes |= getattr(self, f"processes_{tracer}_dict").keys()
+        # Deduplicate while preserving recipe order. A `set` here made the returned
+        # order vary with the interpreter's hash seed, which propagated all the way
+        # into the output: it decides the order terms are merged, hence the order of
+        # the Dataset's variables and, until they were cleared, which single term's
+        # attributes ended up describing the whole Dataset.
+        budgets = _budget_names(self.recipe)
+        processes = {}
+        for tracer in budgets:
+            for process in getattr(self, f"processes_{tracer}_dict"):
+                processes.setdefault(process)
         if available:
             _processes = []
             for process in processes:
@@ -424,7 +629,7 @@ class WaterMassTransformations(WaterMass):
                     [
                         getattr(self, f"processes_{tracer}_dict").get(process, None)
                         in self.grid._ds
-                        for tracer in self.recipe.keys()
+                        for tracer in budgets
                         if getattr(self, f"processes_{tracer}_dict").get(process, None)
                         is not None
                     ]
@@ -432,7 +637,7 @@ class WaterMassTransformations(WaterMass):
                     _processes.append(process)
             return _processes
         else:
-            return processes
+            return list(processes)
 
     def datadict(self, tracer, term):
         """
@@ -556,12 +761,7 @@ class WaterMassTransformations(WaterMass):
         """
 
         lam_var = self.get_lambda_var(lambda_name)
-        prebinned = all(
-            [
-                (c in self.grid.axes["Z"].coords.values())
-                for c in [f"{lam_var}_l", f"{lam_var}_i"]
-            ]
-        )
+        prebinned = self._prebinned(lam_var)
 
         # Get layer-integrated potential temperature tendency
         # from tendency of heat (in W/m^2)
@@ -598,9 +798,7 @@ class WaterMassTransformations(WaterMass):
         # from heat and salt, lambda = density
         # Here we want to output 2 separate components of the transformation rates:
         # (1) transformation due to heat tend, (2) transformation due to salt tend
-        elif lambda_name in (
-            [] if self.lambdas("density") is None else self.lambdas("density")
-        ):
+        elif self._is_density_lambda(lambda_name):
             lam = self.get_density(lambda_name)
             rhos = self.rho_tend(term)
             hlamdot = {}
@@ -664,7 +862,11 @@ class WaterMassTransformations(WaterMass):
         Returns
         -------
         transformed_term : xarray.DataArray
-            Data array containing transformed tendencies.
+            Data array containing transformed tendencies. The lambda bin-center
+            coordinate is annotated here; the transformation rates themselves are
+            annotated by `transformations_from_hlamdot`, which owns the sign
+            convention (transformation is convergence into a layer, so it negates
+            this result).
 
         See also
         --------
@@ -675,12 +877,14 @@ class WaterMassTransformations(WaterMass):
         if hlamdot is None:
             return
 
-        # Resolve the transformation method for *this call only*. A prebinned
-        # target forces "xgcm" below; keeping it local avoids corrupting
-        # `self.method` for subsequent calls (e.g. across terms or lambdas).
-        method = self.method
+        lam_var = self.get_lambda_var(lambda_name)
+        # Resolve the transformation method for *this call only*: "default" picks
+        # a backend from `integrate`, and a prebinned target forces "xgcm". Keeping
+        # the choice local avoids corrupting `self.method` for subsequent calls
+        # (e.g. across terms or lambdas).
+        method = self._resolve_method(lam_var, integrate)
 
-        if method in ["default", "xhistogram"]:
+        if method == "xhistogram":
             dim = [*self._horizontal_dims, self._zc] if integrate else [self._zc]
         else:
             dim = None
@@ -701,17 +905,9 @@ class WaterMassTransformations(WaterMass):
         bin_bounds = bins.values if isinstance(bins, xr.DataArray) else bins
 
         # If lambda is already a vertical coordinate, no need to use the 3D lambda for transformations
-        lam_var = self.get_lambda_var(lambda_name)
-        prebinned = all(
-            [
-                (c in self.grid.axes["Z"].coords.values())
-                for c in [f"{lam_var}_l", f"{lam_var}_i"]
-            ]
-        )
-        if prebinned and not (self.rebin):
+        if self._prebinned(lam_var) and not (self.rebin):
             lam = lam.rename({lam.name: lam_var}).rename(lam_var)
             lam_i = self.grid._ds[f"{lam_var}_i"]
-            method = "xgcm"
         else:
             if self._zc in lam.dims:
                 lam_i = self.grid.interp(lam, "Z", padding="extend").rename(
@@ -720,9 +916,7 @@ class WaterMassTransformations(WaterMass):
             else:
                 lam_i = lam.broadcast_like(self.grid._ds[self._zc])
 
-        if lambda_name in (
-            [] if self.lambdas("density") is None else self.lambdas("density")
-        ):
+        if self._is_density_lambda(lambda_name):
             hlamdot_transformed = xr.merge(
                 [
                     self._transform_one(
@@ -739,6 +933,9 @@ class WaterMassTransformations(WaterMass):
                     if hlamdot[component] is not None
                 ]
             )
+            # As in `transformations_from_hlamdot`: don't let the heat component's
+            # attributes stand in for the heat/salt pair at the Dataset level.
+            hlamdot_transformed.attrs = {}
         else:
             hlamdot_transformed = self._transform_one(
                 hlamdot,
@@ -750,7 +947,40 @@ class WaterMassTransformations(WaterMass):
                 integrate,
                 output_name=f"{term}",
             )
+        self._annotate_lambda_coord(hlamdot_transformed, lam, lam_var, bin_bounds)
         return hlamdot_transformed
+
+    def _annotate_lambda_coord(self, transformed, lam, lam_var, bin_bounds):
+        """
+        Describe the `{lambda}_l_target` bin-center coordinate of a transformed array.
+
+        Units and names are inherited from the lambda field itself where it has
+        them, so a model's own `thetao` metadata carries through. That inheritance
+        goes through `lambda_coord_attrs`, which takes the three keys a bin axis
+        can honestly borrow; everything else the binning backend copied off the
+        lambda field is cleared first, rather than updated around.
+
+        Clearing matters here as much as anywhere: a set of bin centers is not an
+        area mean over `xh`/`yh`, carries no `area: areacello` cell measure, and
+        was not built from `average_T1,average_T2` -- yet on real MOM6 output all
+        three rode in, along with the lambda's `valid_range` and `grid_mapping`.
+        The bin axis is a coordinate, so the two leak tests, which walk
+        `data_vars`, never saw it.
+
+        The bin edges are stashed in a private coordinate attribute rather than
+        written out here: a CF `bounds` variable needs a second dimension, which a
+        DataArray cannot carry, so `transformations_from_hlamdot` materializes it
+        once the results have been merged into a Dataset.
+        """
+        target = f"{lam.name}_l_target"
+        if target not in transformed.coords:
+            return
+        source = self.grid._ds.get(lam_var)
+        coord_attrs = _attrs.lambda_coord_attrs(lam_var, source)
+        coord = transformed.coords[target]
+        _attrs.strip_inherited_attrs(coord)
+        coord.attrs.update(coord_attrs)
+        coord.attrs[_BIN_EDGES_ATTR] = list(np.asarray(bin_bounds, dtype=float))
 
     def _transform_one(
         self, weights, lam, lam_i, bin_bounds, dim, method, integrate, output_name
@@ -762,9 +992,16 @@ class WaterMassTransformations(WaterMass):
         `integrate=True`, sums over the horizontal dimensions.
 
         This is the shared kernel for both the scalar-lambda path and each heat/salt
-        component of the density-lambda path in `transform_hlamdot_term`.
+        component of the density-lambda path in `transform_hlamdot_term`. `method` is
+        the concrete backend resolved by `_resolve_method`, never "default".
+
+        The result's attributes are cleared: whether any of the input tendency's
+        attributes survive this far depends on the backend and the xarray version,
+        and a transformation rate labelled "W m-2" is worse than one labelled
+        nothing at all. The correct attributes are set upstream, in
+        `transformations_from_hlamdot`.
         """
-        if ((method == "default") and integrate) or (method == "xhistogram"):
+        if method == "xhistogram":
             transformed = histogram(
                 lam,
                 bins=[bin_bounds],
@@ -788,7 +1025,9 @@ class WaterMassTransformations(WaterMass):
             )
             if integrate:
                 transformed = transformed.sum(self._horizontal_dims)
-        return (transformed / np.diff(bin_bounds)).rename(output_name)
+        transformed = (transformed / np.diff(bin_bounds)).rename(output_name)
+        transformed.attrs = {}
+        return transformed
 
     def transformations_from_hlamdot(
         self, lambda_name, term=None, bins=None, mask=None, integrate=True
@@ -818,7 +1057,8 @@ class WaterMassTransformations(WaterMass):
         -------
         transformations : xarray.Dataset
             Dataset containing components of water mass transformations, possibly grouped as
-            specified by the arguments.
+            specified by the arguments. Every variable carries CF-style attributes
+            describing its units, sign convention, and provenance; see `xwmt.attrs`.
 
         See also
         --------
@@ -834,57 +1074,218 @@ class WaterMassTransformations(WaterMass):
         else:
             return
 
+        # Collected across all terms so that an unlabelled input costs one
+        # warning per call rather than one per variable.
+        self._undescribed_units = set()
+
         wmts = []
         for term in terms:
             transformed_hlamdot = self.transform_hlamdot_term(
                 lambda_name, term=term, bins=bins, mask=mask, integrate=integrate
             )
             if transformed_hlamdot is not None:
-                wmts.append(-transformed_hlamdot)
+                # Negating here is what defines the sign convention (transformation
+                # is convergence into a layer), so this is where the transformation
+                # rates can first be described honestly.
+                wmts.append(
+                    self._annotate_transformation(
+                        -transformed_hlamdot, lambda_name, term, integrate
+                    )
+                )
             else:
                 warnings.warn(
                     f"Process '{term}' for component {lambda_name} is unavailable."
                 )
-        return xr.merge(wmts)
+        merged = xr.merge(wmts)
+        # These are *per-term* Datasets, so xarray's default merge promotes one
+        # arbitrary term's attributes — its `long_name`, `xwmt_term`, `provenance`,
+        # `xbudget_path` — onto the merged Dataset, describing the whole result as
+        # if it were that one term. Clear them; `_annotate_dataset` sets the real
+        # global attributes. Note this cannot be done with `combine_attrs="drop"`,
+        # which would also strip the variable and coordinate attributes this whole
+        # module exists to attach (including the stashed lambda bin edges below).
+        merged.attrs = {}
+        self._warn_undescribed_units(lambda_name)
+        return self._add_lambda_bounds(merged)
+
+    def _warn_undescribed_units(self, lambda_name):
+        """Warn once if any rate had to go out without a `units` attribute.
+
+        A silently-missing `units` reads as a regression from output that used
+        to carry one, so say so and say what to do about it -- but once per
+        call, not once per variable.
+        """
+        undescribed = sorted(n for n in self._undescribed_units if n is not None)
+        self._undescribed_units = set()
+        if not undescribed:
+            return
+        warnings.warn(
+            f"Could not determine the units of the {lambda_name} transformation "
+            f"rates {undescribed}, so the 'units' attribute is omitted rather "
+            f"than guessed. Give the input tendency a 'units' attribute, or -- "
+            f"for an xbudget-built budget -- label 'areacello' with "
+            f'units="m2" so xbudget can infer them.'
+        )
+
+    def _annotate_transformation(self, transformed, lambda_name, term, integrate):
+        """
+        Attach CF-style attributes to the transformation rate(s) for one process term.
+
+        `transformed` is a DataArray for a scalar lambda and a Dataset of heat/salt
+        components for a density lambda; both are annotated in place and returned.
+        """
+        lam_var = self.get_lambda_var(lambda_name)
+        method = self._resolve_method(lam_var, integrate)
+
+        def annotate(da, component):
+            # A density transformation component is driven by a single tracer
+            # budget; every other lambda is its own budget.
+            tracers = [component] if component is not None else [lambda_name]
+            source_attrs = _attrs.collect_source_attrs(
+                self.source_arrays(term, tracers)
+            )
+            # Derived here rather than carried down from `calc_hlamdot_and_lambda`:
+            # `_transform_one` clears the transformed array's attributes
+            # unconditionally, and that wipe is worth keeping absolute. Every
+            # input the derivation needs is already in scope.
+            units, units_source = self._transformation_units(
+                lambda_name, term, component
+            )
+            if units is None:
+                self._undescribed_units.add(da.name)
+            da.attrs = _attrs.transformation_attrs(
+                lambda_name,
+                lam_var,
+                term,
+                component,
+                method,
+                integrate,
+                self._horizontal_dims,
+                self._zc,
+                source_attrs=source_attrs,
+                side=_attrs.budget_side(source_attrs, self.recipe, term),
+                units=units,
+                units_source=units_source,
+            )
+
+        if isinstance(transformed, xr.Dataset):
+            for name, da in transformed.data_vars.items():
+                component = next(
+                    (
+                        c
+                        for c in self._COMPONENTS
+                        if name == self._component_name(term, c)
+                    ),
+                    None,
+                )
+                annotate(da, component)
+        else:
+            annotate(transformed, None)
+        return transformed
+
+    def _add_lambda_bounds(self, transformations):
+        """
+        Turn the stashed lambda bin edges into a CF `bounds` variable.
+
+        `transform_hlamdot_term` records the bin edges as a private attribute on the
+        `{lambda}_l_target` coordinate because a DataArray cannot hold the extra
+        dimension a bounds variable needs. Now that the terms are merged into a
+        Dataset, promote them so that downstream users (and netCDF readers) can
+        recover the exact bin widths the rates were normalized by.
+        """
+        if not isinstance(transformations, xr.Dataset):
+            return transformations
+        for name in list(transformations.coords):
+            edges = transformations[name].attrs.pop(_BIN_EDGES_ATTR, None)
+            if edges is None:
+                continue
+            edges = np.asarray(edges)
+            bounds_name = f"{name}_bnds"
+            lam_var = name[: -len("_l_target")]
+            transformations[bounds_name] = (
+                (name, "bnds"),
+                np.stack([edges[:-1], edges[1:]], axis=-1),
+            )
+            transformations[bounds_name].attrs = _attrs.bin_bounds_attrs(
+                lam_var, self.grid._ds.get(lam_var)
+            )
+            transformations[name].attrs["bounds"] = bounds_name
+        return transformations
 
     ### Helper function to groups terms based on density components (sum_components)
     ### and physical processes (group_processes)
     # Calculate the sum of grouped terms
-    def _sum_terms(self, ds_terms, newterm, terms):
+    def _sum_terms(self, ds_terms, newterm, terms, component=None):
         # `ds_terms` is always the merged transformation Dataset produced upstream;
         # sum the subset of `terms` present in it into a new `newterm` variable.
         if not isinstance(ds_terms, xr.Dataset):
             return
-        das = [ds_terms[term] for term in terms if term in ds_terms]
+        present = [term for term in terms if term in ds_terms]
+        das = [ds_terms[term] for term in present]
         if das:
-            ds_terms[newterm] = sum(das)
+            summed = sum(das)
+            # `sum` drops attributes, so describe the sum from one contributor
+            # (all share lambda and cell_methods) plus the list of terms that
+            # went into it.
+            base_attrs = das[0].attrs
+            seen = [da.attrs.get("units") for da in das]
+            if not _units.same_units(seen):
+                # Now that units are derived rather than constant, summands can
+                # genuinely disagree -- a budget whose terms point at
+                # differently-labelled diagnostics, say. Add them anyway (the
+                # numbers are what they have always been) but decline to claim
+                # units for the result.
+                warnings.warn(
+                    f"Summing '{newterm}' from terms with different units "
+                    f"{sorted(set(str(u) for u in seen))}; the sum is left "
+                    f"without a 'units' attribute."
+                )
+                base_attrs = {
+                    k: v
+                    for k, v in base_attrs.items()
+                    if k not in ("units", "xwmt_units_source")
+                }
+            summed.attrs = _attrs.summed_term_attrs(
+                base_attrs, newterm, present, component=component
+            )
+            ds_terms[newterm] = summed
 
     def _group_processes(self, hlamdot):
         if hlamdot is None:
             return
         for c in hlamdot.coords:
+            # The lambda bin bounds share the lambda's name prefix but are not a
+            # lambda coordinate themselves.
+            if c.endswith("_bnds"):
+                continue
             lambda_key = self.get_lambda_key(c.split("_")[0])
             if lambda_key is not None:
                 if lambda_key == "density":
-                    suffixes = [self._component_suffix(c) for c in self._COMPONENTS] + [
-                        ""
-                    ]
+                    # "" is the heat+salt sum, present only when `sum_components`.
+                    components = list(self._COMPONENTS) + ["total"]
                     budget = self.recipe["heat"]
                 else:
-                    suffixes = [""]
+                    components = [None]
                     budget = self.recipe[lambda_key]
-                for suffix in suffixes:
+                for component in components:
+                    suffix = (
+                        self._component_suffix(component)
+                        if component in self._COMPONENTS
+                        else ""
+                    )
                     if "lhs" in budget:
                         self._sum_terms(
                             hlamdot,
                             f"kinematic_transformation{suffix}",
                             [f"{term}{suffix}" for term in budget["lhs"].keys()],
+                            component=component,
                         )
                     if "rhs" in budget:
                         self._sum_terms(
                             hlamdot,
                             f"material_transformation{suffix}",
                             [f"{term}{suffix}" for term in budget["rhs"].keys()],
+                            component=component,
                         )
         return hlamdot
 
@@ -896,7 +1297,7 @@ class WaterMassTransformations(WaterMass):
             proc_list = [
                 self._component_name(proc, component) for component in self._COMPONENTS
             ]
-            self._sum_terms(hlamdot, proc, proc_list)
+            self._sum_terms(hlamdot, proc, proc_list, component="total")
         if group_processes:
             for proc in ["kinematic_transformation", "material_transformation"]:
                 self._sum_terms(
@@ -906,6 +1307,7 @@ class WaterMassTransformations(WaterMass):
                         self._component_name(proc, component)
                         for component in self._COMPONENTS
                     ],
+                    component="total",
                 )
         return hlamdot
 
@@ -972,7 +1374,7 @@ class WaterMassTransformations(WaterMass):
         if group_processes:
             transformations = self._group_processes(transformations)
 
-        return transformations
+        return self._annotate_dataset(transformations, lambda_name, integrate=False)
 
     def integrate_transformations(
         self,
@@ -1037,4 +1439,16 @@ class WaterMassTransformations(WaterMass):
         if group_processes:
             transformations = self._group_processes(transformations)
 
+        return self._annotate_dataset(transformations, lambda_name, integrate=True)
+
+    def _annotate_dataset(self, transformations, lambda_name, integrate):
+        """Attach global attributes describing the calculation to the output Dataset."""
+        if not isinstance(transformations, xr.Dataset):
+            return transformations
+        lam_var = self.get_lambda_var(lambda_name)
+        transformations.attrs.update(
+            _attrs.dataset_attrs(
+                lambda_name, self._resolve_method(lam_var, integrate), integrate
+            )
+        )
         return transformations
