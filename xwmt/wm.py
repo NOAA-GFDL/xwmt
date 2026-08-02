@@ -343,6 +343,10 @@ class WaterMass:
                 0,
                 dask="parallelized",
             )
+            # The depth argument is a bare scalar, so `apply_ufunc` hands the
+            # result `lat`'s attributes -- a reference pressure labelled
+            # "degrees_north". Describe it as what it is.
+            p_ref.attrs = _attrs.derived_field_attrs("p")
             p_density = ref_km * 1000.0
         elif density_name == "rho":
             p_ref = self.grid._ds.p

@@ -11,6 +11,8 @@ Everything here runs on the tiny synthetic grids from `test_bugfixes`, so no
 dataset download is needed.
 """
 
+import warnings
+
 import numpy as np
 import pytest
 import xarray as xr
@@ -573,6 +575,33 @@ def test_converted_temperature_does_not_inherit_the_salinity_label():
     assert temp.attrs["units"] == "degC", "temperature must not be labelled psu"
     assert "standard_name" not in temp.attrs
     assert xunits.parse(salt.attrs["units"]) == xunits.parse("g kg-1")
+
+
+def test_no_eos_input_is_handed_a_borrowed_label():
+    """Nothing xwmt feeds the EOS may carry another field's units.
+
+    Both leaks this pins were invisible until xeos >= 0.2.3 began checking its
+    inputs, and both came from `xr.apply_ufunc` taking attributes from its first
+    argument: a converted temperature inherited the salinity's "psu", and the
+    sigmaX reference pressure -- whose first argument is a bare scalar depth --
+    inherited `lat`'s "degrees_north".
+
+    `lat` is labelled here deliberately. The Baltic fixture leaves it bare, so it
+    cannot borrow anything and would pass whatever xwmt did; the MOM6 global
+    example data used by the notebooks *is* labelled, which is where this
+    surfaced.
+    """
+    pytest.importorskip("cf_units")
+    grid, budget, _ = _density_grid()
+    grid._ds["lat"].attrs.update(
+        {"units": "degrees_north", "long_name": "latitude of tracer points"}
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        wmt = xwmt.WaterMassTransformations(grid, budget, method="xhistogram")
+        wmt.integrate_transformations("sigma0", bins=np.linspace(0.0, 40.0, 9))
+    borrowed = [str(w.message) for w in caught if "input units" in str(w.message)]
+    assert borrowed == [], f"xeos rejected an input xwmt built: {borrowed}"
 
 
 def test_user_supplied_alpha_beta_are_left_alone():
