@@ -65,6 +65,22 @@ def test_transformation_rates_are_in_kg_per_second(heat_transformations):
         assert transformations[name].attrs["units"] == "kg s-1"
 
 
+#: Attributes that describe an input diagnostic and cannot describe anything
+#: derived from it: how it was sampled, what range its values fall in, how it was
+#: interpolated, what grid it was mapped on. None may appear anywhere in xwmt's
+#: output, on a variable *or* a coordinate.
+LEAKABLE_ATTRS = (
+    "cell_methods",
+    "cell_measures",
+    "time_avg_info",
+    "valid_range",
+    "valid_min",
+    "valid_max",
+    "interp_method",
+    "grid_mapping",
+)
+
+
 def test_no_input_attributes_leak_into_output(heat_transformations):
     """No output variable may describe itself with an input tendency's units."""
     _, transformations = heat_transformations
@@ -75,6 +91,78 @@ def test_no_input_attributes_leak_into_output(heat_transformations):
         # Sampling metadata describes the input diagnostic, not the rate.
         assert "cell_measures" not in da.attrs
         assert "time_avg_info" not in da.attrs
+
+
+def test_nothing_in_the_output_carries_an_input_only_attribute():
+    """Walks coordinates as well as data variables, which is the point.
+
+    The two older leak tests iterate `data_vars`, so the `{lambda}_l_target`
+    coordinate -- which on real MOM6 output carried the lambda's `cell_methods`,
+    `cell_measures` and `time_avg_info` -- was never looked at. `cell_methods` is
+    excluded on data variables only, where xwmt sets its own.
+    """
+    grid, budget, edges = _heat_tendency_grid()
+    rich = {
+        "units": "degC",
+        "cell_methods": "area:mean time:mean",
+        "cell_measures": "area: areacello",
+        "time_avg_info": "average_T1,average_T2",
+        "valid_range": [-3.0, 40.0],
+        "valid_min": -3.0,
+        "valid_max": 40.0,
+        "interp_method": "conserve_order1",
+        "grid_mapping": "crs",
+    }
+    grid._ds["temperature"].attrs.update(rich)
+    grid._ds["heat_tendency"].attrs.update(dict(rich, units="W"))
+    wmt = xwmt.WaterMassTransformations(
+        grid, budget, cp=1.0, rho_ref=1.0, method="xhistogram"
+    )
+    out = wmt.integrate_transformations("heat", bins=edges)
+
+    for name, da in list(out.data_vars.items()) + list(out.coords.items()):
+        forbidden = set(LEAKABLE_ATTRS)
+        if name in out.data_vars:
+            forbidden.discard("cell_methods")  # xwmt sets its own on the rates
+        leaked = forbidden & set(da.attrs)
+        assert not leaked, f"{name} leaked {sorted(leaked)}"
+
+
+def test_watermass_derived_fields_carry_no_input_only_attributes():
+    """Same rule for the intermediate fields, including alpha/beta from the EOS.
+
+    `alpha` is a coefficient in K-1; it may keep the `units` and `long_name` xeos
+    set, but not the input temperature's `standard_name`, `valid_range` or
+    `grid_mapping` -- xeos sets no `standard_name` on a coefficient, so one found
+    there can only have leaked.
+    """
+    grid = minimal_grid()
+    grid._ds["temperature"].attrs.update(
+        {
+            "units": "degC",
+            "standard_name": "sea_water_potential_temperature",
+            "valid_range": [-3.0, 40.0],
+            "interp_method": "conserve_order1",
+            "grid_mapping": "crs",
+            "cell_methods": "area:mean time:mean",
+        }
+    )
+    grid._ds["dz"].attrs.update(
+        {"units": "m", "standard_name": "cell_thickness", "valid_range": [0.0, 1e4]}
+    )
+    wm = xwmt.WaterMass(grid, t_name="temperature", s_name="so", h_name="dz")
+    wm.get_density("sigma2")
+
+    for name in ("p", "z", "z_interface", "sigma2", "alpha", "beta", "dz_i"):
+        if name not in wm.grid._ds:
+            continue
+        leaked = set(LEAKABLE_ATTRS) & set(wm.grid._ds[name].attrs)
+        assert not leaked, f"{name} leaked {sorted(leaked)}"
+
+    for coefficient in ("alpha", "beta"):
+        assert set(wm.grid._ds[coefficient].attrs) <= set(
+            xattrs.EOS_COEFFICIENT_ATTRS
+        ), f"{coefficient} kept more than xeos set: {wm.grid._ds[coefficient].attrs}"
 
 
 def test_transformation_rates_are_described(heat_transformations):
@@ -668,12 +756,32 @@ def test_lambda_coord_units_fall_back_for_derived_densities():
     assert "units" not in xattrs.lambda_coord_attrs("some_tracer")
 
 
-def test_strip_inherited_attrs_can_keep_identity():
-    da = xr.DataArray(
-        [1.0],
-        attrs={"units": "degC-1", "cell_methods": "time: mean", "long_name": "alpha"},
-    )
-    xattrs.strip_inherited_attrs(da, identity=False)
+def test_strip_inherited_attrs_keeps_only_what_it_is_told_to():
+    """An allowlist: anything not named is dropped, however obscure.
+
+    The blocklist this replaced could only exclude leaks somebody had thought
+    of, so `valid_range`, `interp_method` and `grid_mapping` rode through onto
+    every derived field.
+    """
+    leaky = {
+        "units": "degC-1",
+        "long_name": "alpha",
+        "cell_methods": "time: mean",
+        "standard_name": "sea_water_potential_temperature",
+        "valid_range": [-3.0, 40.0],
+        "interp_method": "conserve_order1",
+        "grid_mapping": "crs",
+    }
+
+    da = xr.DataArray([1.0], attrs=dict(leaky))
+    xattrs.strip_inherited_attrs(da, keep=xattrs.EOS_COEFFICIENT_ATTRS)
     assert da.attrs == {"units": "degC-1", "long_name": "alpha"}
+
+    da = xr.DataArray([1.0], attrs=dict(leaky))
     xattrs.strip_inherited_attrs(da)
     assert da.attrs == {}
+
+    # `standard_name` is deliberately absent from the coefficient allowlist:
+    # xeos sets none on alpha/beta, so one found there came from the input.
+    assert "standard_name" not in xattrs.EOS_COEFFICIENT_ATTRS
+    assert "standard_name" in xattrs.EOS_DENSITY_ATTRS

@@ -955,21 +955,32 @@ class WaterMassTransformations(WaterMass):
         Describe the `{lambda}_l_target` bin-center coordinate of a transformed array.
 
         Units and names are inherited from the lambda field itself where it has
-        them, so a model's own `thetao` metadata carries through. The bin edges are
-        stashed in a private coordinate attribute rather than written out here: a
-        CF `bounds` variable needs a second dimension, which a DataArray cannot
-        carry, so `transformations_from_hlamdot` materializes it once the results
-        have been merged into a Dataset.
+        them, so a model's own `thetao` metadata carries through. That inheritance
+        goes through `lambda_coord_attrs`, which takes the three keys a bin axis
+        can honestly borrow; everything else the binning backend copied off the
+        lambda field is cleared first, rather than updated around.
+
+        Clearing matters here as much as anywhere: a set of bin centers is not an
+        area mean over `xh`/`yh`, carries no `area: areacello` cell measure, and
+        was not built from `average_T1,average_T2` -- yet on real MOM6 output all
+        three rode in, along with the lambda's `valid_range` and `grid_mapping`.
+        The bin axis is a coordinate, so the two leak tests, which walk
+        `data_vars`, never saw it.
+
+        The bin edges are stashed in a private coordinate attribute rather than
+        written out here: a CF `bounds` variable needs a second dimension, which a
+        DataArray cannot carry, so `transformations_from_hlamdot` materializes it
+        once the results have been merged into a Dataset.
         """
         target = f"{lam.name}_l_target"
         if target not in transformed.coords:
             return
         source = self.grid._ds.get(lam_var)
         coord_attrs = _attrs.lambda_coord_attrs(lam_var, source)
-        transformed.coords[target].attrs.update(coord_attrs)
-        transformed.coords[target].attrs[_BIN_EDGES_ATTR] = list(
-            np.asarray(bin_bounds, dtype=float)
-        )
+        coord = transformed.coords[target]
+        _attrs.strip_inherited_attrs(coord)
+        coord.attrs.update(coord_attrs)
+        coord.attrs[_BIN_EDGES_ATTR] = list(np.asarray(bin_bounds, dtype=float))
 
     def _transform_one(
         self, weights, lam, lam_i, bin_bounds, dim, method, integrate, output_name

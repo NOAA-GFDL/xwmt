@@ -225,7 +225,7 @@ class WaterMass:
             # 1 dbar = 1e4 Pa.
             p = self.rho_ref * self.gravity * (-z) * 1e-4
         if isinstance(p, xr.DataArray):
-            p.attrs = _attrs.derived_field_attrs("p")
+            p.attrs = _attrs.pressure_attrs(self.gravity)
         return p
 
     def _compute_depth_coordinates(self):
@@ -242,24 +242,25 @@ class WaterMass:
         for name in ("z", "z_interface"):
             self._describe_derived(name, _attrs.derived_field_attrs(name))
 
-    def _describe_derived(self, name, attrs, keep_identity=False):
+    def _describe_derived(self, name, attrs, keep=()):
         """
         Describe a field that xwmt derived onto its own copy of the dataset.
 
         Fields built by arithmetic inherit the attributes of whichever input
         xarray took them from -- left alone, the pressure field `p` reports the
-        layer thickness's "Cell Thickness" in metres. Those inherited attributes
-        are stripped before xwmt's own are applied.
+        layer thickness's "Cell Thickness" in metres. Everything inherited is
+        cleared before xwmt's own attributes are applied.
 
-        `keep_identity=True` preserves `units`/`long_name`/`standard_name`, for the
-        fields an upstream package annotates deliberately -- `xeos` describes the
-        `alpha`, `beta` and density arrays it returns, and those descriptions win
-        over anything xwmt would assert.
+        `keep` names the attributes an upstream package set deliberately and
+        which therefore survive -- `xeos` describes the `alpha`, `beta` and
+        density arrays it returns better than xwmt could. It is an allowlist
+        because a blocklist can only ever exclude the leaks somebody remembered;
+        see :func:`xwmt.attrs.strip_inherited_attrs`.
         """
         if name not in self.grid._ds:
             return
         da = self.grid._ds[name]
-        _attrs.strip_inherited_attrs(da, identity=not keep_identity)
+        _attrs.strip_inherited_attrs(da, keep=keep)
         _attrs.set_default_attrs(da, attrs)
 
     @property
@@ -366,7 +367,7 @@ class WaterMass:
         # temperature/salinity kind conversions.
         if "p" not in self.grid._ds.data_vars:
             self.grid._ds["p"] = self._pressure_from_height(self.grid._ds.z)
-            self._describe_derived("p", _attrs.derived_field_attrs("p"))
+            self._describe_derived("p", _attrs.pressure_attrs(self.gravity))
 
         # `p_ref` is the pressure at which alpha/beta are evaluated; `p_density` is
         # the pressure at which the density variable itself is evaluated. For "rho"
@@ -410,13 +411,14 @@ class WaterMass:
         # is not xwmt's to strip.
         if not self._user_alpha:
             self.grid._ds["alpha"] = self.eos.alpha(temp, salt, p_ref)
-            # `keep_identity`: the EOS backend describes what it returns better
-            # than xwmt could, so only the sampling attributes that rode in from
-            # the model's temperature and salinity diagnostics are cleared.
-            self._describe_derived("alpha", {}, keep_identity=True)
+            # The EOS backend describes what it returns better than xwmt could,
+            # but only for the keys it actually sets: `units` and `long_name`.
+            # It sets no `standard_name` on a coefficient, so one found there
+            # leaked in from the input temperature.
+            self._describe_derived("alpha", {}, keep=_attrs.EOS_COEFFICIENT_ATTRS)
         if not self._user_beta:
             self.grid._ds["beta"] = self.eos.beta(temp, salt, p_ref)
-            self._describe_derived("beta", {}, keep_identity=True)
+            self._describe_derived("beta", {}, keep=_attrs.EOS_COEFFICIENT_ATTRS)
 
         # Density (kg/m^3): in-situ for "rho", potential-density anomaly for "sigmaX".
         if density_name not in self.grid._ds:
@@ -443,7 +445,7 @@ class WaterMass:
             self._describe_derived(
                 density_name,
                 _attrs.derived_field_attrs(density_name),
-                keep_identity=density_name == "rho",
+                keep=_attrs.EOS_DENSITY_ATTRS if density_name == "rho" else (),
             )
 
         return self.grid._ds[density_name]

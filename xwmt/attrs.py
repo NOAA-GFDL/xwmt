@@ -92,6 +92,7 @@ __all__ = [
     "bin_bounds_attrs",
     "dataset_attrs",
     "derived_field_attrs",
+    "pressure_attrs",
 ]
 
 
@@ -142,41 +143,44 @@ def set_default_attrs(da, attrs):
     return da
 
 
-#: Attributes describing how an *input* diagnostic was sampled or averaged. They
-#: ride along through xarray arithmetic onto derived fields, where they are no
-#: longer true: a nonlinear function of a time mean is not the time mean of the
-#: function, and a field interpolated onto interfaces is no longer a `zl: sum`.
-_SAMPLING_ATTRS = ("cell_methods", "cell_measures", "time_avg_info")
+#: Attributes an equation-of-state backend sets on the coefficients it returns.
+#: `xeos` gives `alpha`/`beta` a `units` and a `long_name` and no `standard_name`
+#: (the CF table has no name for a haline contraction coefficient), so those two
+#: are the only keys on a coefficient that can have come from xeos rather than
+#: from the temperature it was computed from.
+EOS_COEFFICIENT_ATTRS = ("units", "long_name")
 
-#: Attributes naming, dimensioning or orienting the quantity itself. A derived
-#: field is a *different* quantity from its inputs, so a value inherited through
-#: arithmetic is simply wrong. Left in place, the pressure field `p` would report
-#: `units: "m"` and `standard_name: "cell_thickness"` from the layer thickness it
-#: is computed from, and `positive: "up"` from the height.
-_IDENTITY_ATTRS = (
-    "standard_name",
-    "long_name",
-    "units",
-    "description",
-    "comment",
-    "positive",
-    "axis",
-)
+#: The same for a density, which `xeos` additionally gives a real
+#: `standard_name` -- and does so by overwriting whatever the input contributed,
+#: so keeping it is safe here in a way it is not for the coefficients.
+EOS_DENSITY_ATTRS = ("units", "long_name", "standard_name")
 
 
-def strip_inherited_attrs(da, identity=True):
-    """Remove attributes that leaked onto `da` from the fields it was derived from.
+def strip_inherited_attrs(da, keep=()):
+    """Drop every attribute `da` inherited from the fields it was derived from.
 
-    `identity=False` keeps `units`/`long_name`/`standard_name`, for fields whose
-    metadata an upstream package sets deliberately -- `xeos` annotates the `alpha`,
-    `beta` and density arrays it returns, and those descriptions are authoritative;
-    only the sampling attributes that rode in from the model's temperature and
-    salinity diagnostics need clearing.
+    An allowlist, not a blocklist, and deliberately so. The previous shape of
+    this function named the attributes to *remove*, which meant every attribute
+    nobody had thought of survived onto a field it did not describe: a layer
+    thickness's `valid_range: [0, 10000]` (metres) ended up on a pressure in
+    dbar and on a density in kg m-3, and an input temperature's `interp_method`
+    and `grid_mapping` ended up on everything derived from it. A derived field is
+    a *different quantity*, so nothing carries over unless something states that
+    it should.
+
+    `keep` names the attributes that may survive because an upstream package set
+    them deliberately -- see :data:`EOS_COEFFICIENT_ATTRS` and
+    :data:`EOS_DENSITY_ATTRS`. Note it cannot be `("units", "long_name",
+    "standard_name")` for `alpha`/`beta`: xeos sets no `standard_name` on those,
+    so anything found there leaked in, and a thermal expansion coefficient in
+    K-1 announcing itself as `sea_water_potential_temperature` is exactly the
+    kind of claim a CF-aware reader acts on.
 
     Returns `da` for convenient chaining.
     """
-    for key in _SAMPLING_ATTRS + (_IDENTITY_ATTRS if identity else ()):
-        da.attrs.pop(key, None)
+    keep = set(keep)
+    for key in [k for k in da.attrs if k not in keep]:
+        del da.attrs[key]
     return da
 
 
@@ -469,11 +473,13 @@ def dataset_attrs(lam_name, method, integrate):
 #: subtraction that turns density into a potential-density anomaly drops the
 #: attributes xeos set (and would leave a now-wrong "in-situ density" long_name).
 _DERIVED_FIELD_ATTRS = {
+    # No `comment` naming how the pressure was obtained: that now depends on the
+    # `gravity` argument, so `pressure_attrs` fills it in per call rather than
+    # this table asserting one of the two paths unconditionally.
     "p": {
         "units": "dbar",
         "long_name": "sea water pressure",
         "standard_name": "sea_water_pressure",
-        "comment": "Derived from depth via gsw.p_from_z.",
     },
     # `z` and `z_interface` are heights, not depths: they are built by
     # accumulating layer thickness downward with a negative sign, so they run
@@ -493,6 +499,29 @@ _DERIVED_FIELD_ATTRS = {
         "comment": "Negative below the sea surface.",
     },
 }
+
+
+def pressure_attrs(gravity):
+    """Attributes for the sea pressure `WaterMass` derives from depth.
+
+    `gravity` is `WaterMass.gravity`: a number for the Boussinesq hydrostatic
+    pressure, or ``"gsw"`` for `gsw.p_from_z`'s latitude-dependent gravity. Which
+    of the two ran is worth recording, because they do not agree -- a constant
+    9.81 differs from gsw's local gravity by a few parts in a thousand, which is
+    a real (if small) difference in the pressure the equation of state is
+    evaluated at.
+    """
+    attrs = derived_field_attrs("p")
+    if gravity == "gsw":
+        attrs["comment"] = (
+            "Derived from height via gsw.p_from_z, whose gravity varies with latitude."
+        )
+    else:
+        attrs["comment"] = (
+            f"Boussinesq hydrostatic pressure from height, with a constant "
+            f"gravitational acceleration of {gravity} m s-2."
+        )
+    return attrs
 
 
 def derived_field_attrs(name):
